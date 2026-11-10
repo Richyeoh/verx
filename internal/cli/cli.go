@@ -262,7 +262,18 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				continue
 			}
-			rows = append(rows, row{c.Name, c.Current, "", c.Registry})
+			kind := ""
+			if c.Registry != "" {
+				if m, err := registry.LoadManifest(c.Registry, c.Name); err == nil {
+					kind = m.Kind
+				}
+			}
+			if kind == "" {
+				if cand, err := registry.Pick(c.Name); err == nil {
+					kind = cand.Manifest.Kind
+				}
+			}
+			rows = append(rows, row{c.Name, c.Current, kind, c.Registry})
 		}
 		if flagJSON {
 			data, _ := json.MarshalIndent(rows, "", "  ")
@@ -394,7 +405,15 @@ func maybeLock(projectDir, name string) {
 	if _, err := os.Stat(filepath.Join(projectDir, "verx.json")); err != nil {
 		return
 	}
-	writeLockEntry(projectDir, name)
+	writeLockEntry(projectDir, bareName(name))
+}
+
+func bareName(q string) string {
+	name, _ := project.ParseDep(q)
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }
 
 func mapErrText(err error) string { return err.Error() }
@@ -465,16 +484,27 @@ func newAddCmd() *cobra.Command {
 			if err := installer.Install(q, installOpts(cmd)); err != nil {
 				return mapInstallErr(err)
 			}
-			writeLockEntry(".", name)
+			bare := name
+			if i := strings.LastIndex(bare, "/"); i >= 0 {
+				bare = bare[i+1:]
+			}
+			writeLockEntry(".", bare)
 		}
 		return nil
 	}}
 }
 
 func writeLockEntry(projectDir, name string) {
+	bare := name
+	if i := strings.LastIndex(bare, "/"); i >= 0 {
+		bare = bare[i+1:]
+	}
 	c, err := registry.Pick(name)
 	if err != nil {
-		return
+		c, err = registry.Pick(bare)
+		if err != nil {
+			return
+		}
 	}
 	m := c.Manifest
 	sha := ""
@@ -482,7 +512,7 @@ func writeLockEntry(projectDir, name string) {
 		sha = p.SHA256
 	}
 	_ = project.UpdateLockPackage(projectDir, project.LockPackage{
-		Name: name, Version: m.Version, Registry: c.Meta.Name, SHA256: sha,
+		Name: m.Name, Version: m.Version, Registry: c.Meta.Name, SHA256: sha,
 	})
 }
 
@@ -573,18 +603,30 @@ func newSyncCmd() *cobra.Command {
 		}
 		lk := project.ReadLock(dir)
 		if len(lk.Packages) == 0 {
-			// 无 lock 则按 verx.json 装
+			// 无 lock 则按 verx.json 装（带版本精确）
 			for _, d := range project.Deps(dir) {
-				name, _ := project.ParseDep(d)
-				if err := installer.Install(name, installOpts(cmd)); err != nil {
+				name, wantVer := project.ParseDep(d)
+				q := name
+				if wantVer != "" {
+					q = name + "@" + wantVer
+				}
+				if err := installer.Install(q, installOpts(cmd)); err != nil {
 					return mapInstallErr(err)
 				}
+				maybeLock(dir, bareName(name))
 			}
 			return nil
 		}
 		failed := 0
 		for _, p := range lk.Packages {
 			q := p.Name
+			if p.Version != "" {
+				// lock 里存的是裸名+精确版本；若存了 registry/前缀也兼容
+				q += "@" + p.Version
+			}
+			if p.Registry != "" && !strings.Contains(q, "/") {
+				q = p.Registry + "/" + q
+			}
 			if err := installer.Install(q, installOpts(cmd)); err != nil {
 				failed++
 				fmt.Fprintln(os.Stderr, mapErrText(err))
