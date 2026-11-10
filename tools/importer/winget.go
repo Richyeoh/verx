@@ -43,49 +43,44 @@ type githubCodeSearch struct {
 }
 
 // importWinget 从 microsoft/winget-pkgs 转制单个包，只产 windows/amd64 一行。
-// 流程：search/code 定位 installer.yaml -> 取最新版 -> 解析 x64 安装包 -> 补 locale 元数据。
+// 流程：contents API 列版本目录 -> 取最新版 -> 解析 x64 安装包 -> 补 locale 元数据。
+// 不用 search/code（需特殊权限且易 400），contents API 更稳。
 func importWinget(pkg string) (*manifest.Manifest, error) {
-	// 1. 找该 PackageIdentifier 的所有 installer.yaml
-	q := "https://api.github.com/search/code?q=PackageIdentifier:+\"" + pkg + "\"+repo:microsoft/winget-pkgs+filename:installer"
-	var sr githubCodeSearch
-	if err := getJSON(q, &sr); err != nil {
-		return nil, fmt.Errorf("winget 搜索失败 %s: %w", pkg, err)
+	// 1. 按 winget 目录规则定位：manifests/<首字母小写>/<Publisher>/<PackageIdentifier>/
+	dot := strings.Index(pkg, ".")
+	if dot <= 0 {
+		return nil, fmt.Errorf("winget 包名非法: %s", pkg)
 	}
-	if len(sr.Items) == 0 {
-		// search/code 可能限流，退化为直接猜 master 路径（publisher 首字母目录）
-		return nil, fmt.Errorf("winget 未找到包（可能 search API 限流，请配 GITHUB_TOKEN 重试）: %s", pkg)
+	publisherDir := pkg[:dot]
+	letter := strings.ToLower(string(pkg[0]))
+	base := "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/" + letter + "/" + publisherDir + "/" + pkg
+	var entries []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
 	}
-	// 2. 从 path 里抽版本，选最新
-	type cand struct {
-		version string
-		path    string
-		dir     string
+	if err := getJSON(base, &entries); err != nil {
+		return nil, fmt.Errorf("winget 列版本失败 %s: %w", pkg, err)
 	}
-	var cands []cand
-	for _, it := range sr.Items {
-		// manifests/b/<pub>/<pkg>/<ver>/<pkg>.installer.yaml
-		parts := strings.Split(it.Path, "/")
-		if len(parts) < 6 {
+	// 2. 从目录名里抽版本，选最新
+	bestVersion := ""
+	for _, e := range entries {
+		if e.Type != "dir" {
 			continue
 		}
-		if !strings.HasSuffix(parts[len(parts)-1], ".installer.yaml") {
+		v := strings.TrimSpace(e.Name)
+		if v == "" {
 			continue
 		}
-		ver := parts[len(parts)-2]
-		dir := strings.Join(parts[:len(parts)-1], "/")
-		cands = append(cands, cand{version: ver, path: it.Path, dir: dir})
+		if bestVersion == "" || ver.Compare(v, bestVersion) > 0 {
+			bestVersion = v
+		}
 	}
-	if len(cands) == 0 {
+	if bestVersion == "" {
 		return nil, fmt.Errorf("winget 未解析出版本: %s", pkg)
 	}
-	best := cands[0]
-	for _, c := range cands[1:] {
-		if ver.Compare(c.version, best.version) > 0 {
-			best = c
-		}
-	}
+	dir := "manifests/" + letter + "/" + publisherDir + "/" + pkg + "/" + bestVersion
 	// 3. 取 installer.yaml
-	rawURL := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + best.path
+	rawURL := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + dir + "/" + pkg + ".installer.yaml"
 	txt, err := getText(rawURL)
 	if err != nil {
 		return nil, err
@@ -122,21 +117,21 @@ func importWinget(pkg string) (*manifest.Manifest, error) {
 		}
 	}
 	if pick == nil {
-		return nil, fmt.Errorf("winget 包无可用 x64 安装包: %s@%s", pkg, best.version)
+		return nil, fmt.Errorf("winget 包无可用 x64 安装包: %s@%s", pkg, bestVersion)
 	}
 	if !isHex64Full(pick.InstallerSha256) {
 		return nil, fmt.Errorf("winget sha256 非法（已拒）: %s", pkg)
 	}
 	// 5. 补元数据：同目录 locale.en-US.yaml
-	localeURL := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + best.dir + "/" + pkg + ".locale.en-US.yaml"
-	display, publisher, license, desc, homepage := pkg, "", "Unknown", pkg, "https://winget.run/pkg/"+pkg
+	localeURL := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + dir + "/" + pkg + ".locale.en-US.yaml"
+	display, localePublisher, license, desc, homepage := pkg, "", "Unknown", pkg, "https://winget.run/pkg/"+pkg
 	if lt, err := getText(localeURL); err == nil {
 		var lf wingetLocaleFile
 		if yaml.Unmarshal([]byte(lt), &lf) == nil {
 			if lf.PackageName != "" {
 				display = lf.PackageName
 			}
-			publisher = lf.Publisher
+			localePublisher = lf.Publisher
 			if lf.License != "" {
 				license = lf.License
 			}
@@ -150,9 +145,8 @@ func importWinget(pkg string) (*manifest.Manifest, error) {
 			}
 		}
 	}
-	_ = publisher
 	name := sanitizeName(lastSegment(pkg))
-	verStr := normalizeVersion(best.version)
+	verStr := normalizeVersion(bestVersion)
 	bin := name + ".exe"
 	m := &manifest.Manifest{
 		API:         "v1",
@@ -162,7 +156,7 @@ func importWinget(pkg string) (*manifest.Manifest, error) {
 		Description: desc,
 		Homepage:    homepage,
 		License:     license,
-		Keywords:    []string{"winget", strings.ToLower(publisher)},
+		Keywords:    []string{"winget", strings.ToLower(localePublisher)},
 		Version:     verStr,
 		Channels:    map[string]string{"stable": verStr},
 		Provides:    []string{name},

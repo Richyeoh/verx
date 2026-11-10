@@ -131,9 +131,37 @@ func importScoop(bucket, app string) (*manifest.Manifest, error) {
 			return nil, fmt.Errorf("读本地 bucket 失败: %w", err)
 		}
 	} else {
-		txt, err2 := getText(base + "/" + app + ".json")
-		if err2 != nil {
-			return nil, err2
+	// Scoop 官方桶 master/main 双分支兼容：404 则换分支重试；
+		// Main/Extras 互为兜底：配错桶也自动找到。
+		var txt string
+		var lastErr error
+		cands := []string{base + "/" + app + ".json"}
+		if strings.Contains(base, "raw.githubusercontent.com") {
+			if strings.Contains(base, "/master/") {
+				cands = append(cands, strings.Replace(base, "/master/", "/main/", 1)+"/"+app+".json")
+			} else if strings.Contains(base, "/main/") {
+				cands = append(cands, strings.Replace(base, "/main/", "/master/", 1)+"/"+app+".json")
+			}
+			// Main <-> Extras 兜底
+			if strings.Contains(base, "ScoopInstaller/Main") {
+				alt := strings.Replace(base, "ScoopInstaller/Main", "ScoopInstaller/Extras", 1)
+				cands = append(cands, alt+"/"+app+".json", strings.Replace(alt, "/master/", "/main/", 1)+"/"+app+".json")
+			} else if strings.Contains(base, "ScoopInstaller/Extras") {
+				alt := strings.Replace(base, "ScoopInstaller/Extras", "ScoopInstaller/Main", 1)
+				cands = append(cands, alt+"/"+app+".json", strings.Replace(alt, "/master/", "/main/", 1)+"/"+app+".json")
+			}
+		}
+		for _, u := range cands {
+			t, err2 := getText(u)
+			if err2 == nil {
+				txt = t
+				lastErr = nil
+				break
+			}
+			lastErr = err2
+		}
+		if lastErr != nil {
+			return nil, lastErr
 		}
 		raw = []byte(txt)
 	}
@@ -210,6 +238,15 @@ func importScoop(bucket, app string) (*manifest.Manifest, error) {
 			{OS: "windows", Arch: "amd64", URL: url, SHA256: strings.ToLower(hash), Bin: bins, Strip: guessStrip(url)},
 		},
 		Test: bins[0] + " --version",
+	}
+	// msi/exe 必须带 installer.silent+uninstall（manifest.Validate 强制），否则 CI 直接拒。
+	// Scoop 本身是解压式安装，这里委托给 scoop，保证可卸载、有据可查。
+	lowerURL := strings.ToLower(url)
+	if strings.HasSuffix(lowerURL, ".msi") || strings.HasSuffix(lowerURL, ".exe") {
+		m.Installer = &manifest.Installer{
+			Silent:    "/S",
+			Uninstall: "scoop uninstall " + app,
+		}
 	}
 	return m, nil
 }
