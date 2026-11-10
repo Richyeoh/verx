@@ -1,0 +1,18 @@
+# verx build outputs
+verx.exe
+verx
+dist/
+*.test
+*.out
+
+# Go cache
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
