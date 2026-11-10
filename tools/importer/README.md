@@ -6,12 +6,16 @@
 ## 目录
 
 - `main.go` 入口：`all | scoop | winget | github`
-- `all.go` 全量：按 `config.yaml` 跑完 Scoop + Winget + GitHub Top
+- `all.go` 全量：Scoop 全桶 + Winget + Arch + VCPKG + Brew + GitHub Top（按此顺序，后者覆盖同名）
 - `scoop.go` A 路：Scoop bucket JSON -> manifest（只产 windows/amd64，hash 复用上游，无 hash 直接拒）
+- `scoop_full.go` A0 路：git/trees 枚举 bucket/*.json 全桶收录，不再手写 apps
 - `winget.go` B 路：winget-pkgs 最新版 -> manifest（优先 portable/zip，只产 windows/amd64，msi/exe 自动补 installer 段）
-- `github.go` C 路：GitHub latest release -> manifest（assetMap 命中多平台，无上游 sha 文件则下载算 hash）
+- `github.go` C 路：GitHub latest release -> manifest（assetMap 命中多平台，archOk 防 amd64/arm64 错配，无上游 sha 文件则下载算 hash）
+- `brew.go` D 路：Homebrew formula.json/cask.json 全量，bottle 复用上游 hash（mac/linux 双平台）
+- `arch.go` E 路：Arch 官方仓 search json 批量（pacman/paru 源，只产 linux/amd64）
+- `vcpkg.go` F 路：microsoft/vcpkg ports 枚举，全量转 lib 源码包（三平台同源，下载算 hash）
 - `common.go` 下载/hash/写盘公共函数
-- `config.yaml` 全量清单：首批 ~20 Scoop + ~9 Winget + 3 GitHub 精选
+- `config.yaml` 全量清单：Scoop 全桶 ~2500 + Winget 9 + GitHub Top 15 + Brew 500/200 + Arch 38 + VCPKG 100（首批配额，跑稳后全放开）
 
 ## 本地跑
 
