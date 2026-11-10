@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 jobs:
   import:
@@ -18,14 +19,18 @@ jobs:
           path: verx
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: verx/go.mod
       - name: run importer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd verx
+          go mod download
+          go vet ./tools/importer/...
           go run ./tools/importer all --config tools/importer/config.yaml --out /tmp/registry-out
           ls -R /tmp/registry-out | head -50
+          echo "=== validate manifests ==="
+          go run ./tools/importer validate --dir /tmp/registry-out
       - name: checkout registry
         uses: actions/checkout@v4
         with:

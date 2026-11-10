@@ -29,12 +29,14 @@ func usage() {
   importer scoop --bucket <owner/repo或URL> --app <name> --out <dir>
   importer winget --package <Publisher.Package> --out <dir>
   importer github --repo <owner/repo> --out <dir> [--name <verx名>]
+  importer validate --dir <registry-out>
 
 说明:
   all      按 config.yaml 跑全量：scoopBuckets + wingetPackages + githubTop
   scoop    单个 Scoop bucket JSON 转制
   winget   单个 Winget 包转制（自动找最新版）
   github   单个 GitHub 仓库 latest release 转制（需 config 模板或自动猜测）
+  validate 校验 out/manifests 下全部 yaml 能过 manifest.Validate
 `)
 }
 
@@ -116,6 +118,18 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("OK %s@%s\n", m.Name, m.Version)
+	case "validate":
+		fs := flag.NewFlagSet("validate", flag.ExitOnError)
+		dir := fs.String("dir", "", "registry 输出根目录（含 manifests/）")
+		_ = fs.Parse(os.Args[2:])
+		if *dir == "" {
+			fmt.Fprintln(os.Stderr, "用法: importer validate --dir <dir>")
+			os.Exit(2)
+		}
+		if err := validateDir(*dir); err != nil {
+			fmt.Fprintln(os.Stderr, "失败:", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
