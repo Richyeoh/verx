@@ -9,7 +9,7 @@
 - `all.go` 全量：Scoop 全桶 + Winget 全枚举 + Arch 全仓 + VCPKG 全枚举 + Brew 全量 + GitHub 精选；全程并发，全部 COLLECT 进合并器，同名按 os/arch 合并后一次落盘
 - `scoop.go` A 路：Scoop bucket JSON -> manifest（只产 windows/amd64，hash 复用上游，无 hash 直接拒）+ git/trees 全桶枚举（Main/Extras/Versions 全收，不再手写 apps）
 - `winget.go` B 路：winget-pkgs 全枚举 -> 最新版 -> manifest（优先 portable/zip，只产 windows/amd64，msi/exe 自动补 installer 段）
-- `github.go` C 路：GitHub latest release -> manifest（assetMap 命中多平台，archOk 防 amd64/arm64 错配，无上游 sha 文件则下载算 hash；唯一需手写模板的源）
+- `github.go` C 路：GitHub 自动发现（search 按 stars 排序，上限 1000）-> latest release -> manifest（默认关键字命中多平台，archOk 防 amd64/arm64 错配，无上游 sha 文件则下载算 hash；无 release/无资产直接跳过）
 - `brew.go` D 路：Homebrew formula.json/cask.json 全量，bottle 复用上游 hash（mac/linux 双平台，只下 2 个大 index，最快）
 - `arch.go` E 路：Arch 官方仓 Core+Extra 全仓枚举（pacman/paru 源，只产 linux/amd64）
 - `vcpkg.go` F 路：microsoft/vcpkg ports 全枚举，全量转 lib 源码包（三平台同源，下载算 hash）

@@ -42,8 +42,9 @@ type fullConfig struct {
 		Limit   int  `yaml:"limit"`
 	} `yaml:"vcpkg"`
 	GitHub struct {
-		Enabled bool             `yaml:"enabled"`
-		Top     []githubTemplate `yaml:"top"`
+		Enabled  bool `yaml:"enabled"`
+		MinStars int  `yaml:"minStars"`
+		Limit    int  `yaml:"limit"`
 	} `yaml:"github"`
 }
 
@@ -67,10 +68,6 @@ func runAll(configPath, outDir string) error {
 	c, err := loadConfig(configPath)
 	if err != nil {
 		return err
-	}
-	workers := c.All.Workers
-	if workers <= 0 {
-		workers = 16
 	}
 	var mu sync.Mutex
 	ok, fail := 0, 0
@@ -139,15 +136,7 @@ func runAll(configPath, outDir string) error {
 		fmt.Println("skip brew (enabled=false)")
 	}
 	if c.GitHub.Enabled {
-		runJobs(c.GitHub.Top, workers, func(t githubTemplate) {
-			m, err := importGitHub(t.Repo, t.Name, &t)
-			if err != nil {
-				report("github/"+t.Repo, err)
-				return
-			}
-			collect(m)
-			fmt.Printf("COLLECT github/%s\n", m.Name)
-		})
+		importGithubAll(c.GitHub.MinStars, c.GitHub.Limit, collect, report)
 	} else {
 		fmt.Println("skip github (enabled=false)")
 	}
