@@ -1,10 +1,19 @@
-# verx registry-importer 全量配置
-# all 模式按此文件跑：Scoop 批量 + Winget 批量 + GitHub Top 精选。
+# verx registry-importer 全量配置：Scoop 全桶 + Winget + Arch + VCPKG + Brew + GitHub Top。
+# 优先级越靠后越全（GitHub 5 平台最后写，覆盖同名 Windows-only）。
 # 全部产物只写 manifests/<name>/<name>.yaml，registry.yaml 不动。
+# limit<=0 全量；CI 首批配小批量，跑稳后再放开。
 
-# A. Scoop 批量转制：bucket 可写 owner/repo（默认 ScoopInstaller/Main 可简写 Main）
+# A0. Scoop 全桶枚举（不再手写 apps）：Main ~1300 + Extras ~1000，全收
+scoopFull:
+  - repo: ScoopInstaller/Main
+    limit: 0
+  - repo: ScoopInstaller/Extras
+    limit: 0
+  - repo: ScoopInstaller/Versions
+    limit: 200
+
+# A. Scoop 手动补漏（全桶枚举不到的再写这里）
 scoopBuckets:
-  # Scoop 官方主桶，先跑 20 个常用 app 做首批
   - repo: ScoopInstaller/Main
     apps: [7zip, git, ripgrep, fd, fzf, bat, eza, jq, yq, curl, wget, aria2, neovim, starship, lazygit, delta, gh, bottom, dust, zoxide]
   - repo: ScoopInstaller/Extras
@@ -197,3 +206,17 @@ githubTop:
       darwin/arm64: [yq]
       linux/amd64: [yq]
       linux/arm64: [yq]
+
+# D. Homebrew 全量（formula bottle 复用上游 hash + cask mac 专属）
+# 首批配 500+200，跑稳后改 0 全量（~8000 formula + ~6000 cask）
+brew:
+  maxFormula: 500
+  maxCask: 200
+
+# E. Arch 官方仓批量（pacman/paru 源，只产 linux/amd64）
+# 热门 CLI 先跑 40 个，后续加量
+archPackages: [ripgrep, fd, fzf, bat, eza, zoxide, starship, delta, bottom, dust, neovim, git, curl, wget, jq, yq, lazygit, gh, aria2, tmux, htop, btop, ncdu, tree, zsh, fish, lsd, procs, duf, broot, helix, kakoune, zellij, alacritty, wezterm, nushell, atuin, direnv]
+
+# F. VCPKG 全量（多为 lib 源码包，需构建；首批 100 个增量跑）
+vcpkg:
+  limit: 100
