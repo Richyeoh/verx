@@ -31,7 +31,7 @@ jobs:
         with:
           repository: verx/registry
           path: registry
-          token: ${{ secrets.REGISTRY_PAT }}
+          token: ${{ secrets.REGISTRY_BOT_TOKEN }}
       - name: copy manifests
         run: |
           cp -r /tmp/registry-out/manifests/. registry/manifests/
@@ -41,7 +41,7 @@ jobs:
         uses: peter-evans/create-pull-request@v7
         with:
           path: registry
-          token: ${{ secrets.REGISTRY_PAT }}
+          token: ${{ secrets.REGISTRY_BOT_TOKEN }}
           branch: bot/import-${{ github.run_number }}
           title: "bot: registry import ${{ github.run_number }}"
           body: "Scoop/Winget/GitHub 自动转制，有变化才提。hash 全部真实，CI 会跑 manifest 校验。"

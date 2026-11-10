@@ -33,7 +33,9 @@ go run ./tools/importer github --repo BurntSushi/ripgrep --out E:/tmp/out
 
 `.github/workflows/registry-import.yml` 每天 02:00 UTC 跑 `all`，
 有新增/版本变化才自动提 PR 到 `github.com/verx/registry`。
-合入后 `registry` 仓库的 `mirror-gitee.yml` 自动推到 Gitee。
+需要 Secret：`REGISTRY_BOT_TOKEN`（能写 registry 仓的 PAT，配在 verx 仓）。
+合入后 `registry` 仓库的 `mirror-gitee.yml` 自动推到 Gitee，
+需要 Secret：`VERX_GITEE_KEY`（能写 Gitee registry 的 SSH 私钥全文，配在 registry 仓）。
 
 ## 为什么这样解超时
 
