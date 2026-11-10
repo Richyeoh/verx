@@ -16,7 +16,7 @@ wingetPackages:
   - Git.Git
   - Neovim.Neovim
   - Starship.Starship
-  -ajeetdsouza.zoxide
+  - ajeetdsouza.zoxide
   - sharkdp.fd
   - sharkdp.bat
   - junegunn.fzf
