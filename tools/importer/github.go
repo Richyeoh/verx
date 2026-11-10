@@ -137,7 +137,7 @@ func importGitHub(repo, name string, tmpl *githubTemplate) (*manifest.Manifest, 
 		return nil, fmt.Errorf("github 包无可用资产: %s@%s", repo, verStr)
 	}
 	if test == "" {
-		test = defaultBin(name, "windows") + " --version"
+		test = name + " --version"
 	}
 	m := &manifest.Manifest{
 		API:         "v1",

@@ -46,7 +46,8 @@ jobs:
         with:
           path: registry
           token: ${{ secrets.REGISTRY_BOT_TOKEN }}
-          branch: bot/import-${{ github.run_number }}
+          branch: bot/import
+          delete-branch: true
           title: "bot: registry import ${{ github.run_number }}"
-          body: "Scoop/Winget/GitHub 自动转制，有变化才提。hash 全部真实，CI 会跑 manifest 校验。"
+          body: "Scoop/Winget/GitHub 自动转制，有变化才提。hash 全部真实，CI 会跑 manifest 校验。每天跑都更新同一个分支，不会堆分支；PR 合并后分支自动删除。"
           commit-message: "bot: import manifests"
