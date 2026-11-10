@@ -1,0 +1,84 @@
+# verx registry-importer 全量配置
+# all 模式按此文件跑：Scoop 批量 + Winget 批量 + GitHub Top 精选。
+# 全部产物只写 manifests/<name>/<name>.yaml，registry.yaml 不动。
+
+# A. Scoop 批量转制：bucket 可写 owner/repo（默认 ScoopInstaller/Main 可简写 Main）
+scoopBuckets:
+  # Scoop 官方主桶，先跑 20 个常用 app 做首批
+  - repo: ScoopInstaller/Main
+    apps: [7zip, git, ripgrep, fd, fzf, bat, eza, jq, yq, curl, wget, aria2, neovim, starship, lazygit, delta, gh, bottom, dust, zoxide]
+  - repo: ScoopInstaller/Extras
+    apps: [vscode, windows-terminal, powertoys]
+
+# B. Winget 批量转制：PackageIdentifier 列表，自动取最新版
+wingetPackages:
+  - BurntSushi.Ripgrep.MSVC
+  - Git.Git
+  - Neovim.Neovim
+  - Starship.Starship
+  -ajeetdsouza.zoxide
+  - sharkdp.fd
+  - sharkdp.bat
+  - junegunn.fzf
+  - jqlang.jq
+
+# C. GitHub Top100 精选：repo + verx 名 + 资产映射模板
+# assetMap: 平台 -> 资产名包含的关键字（任一命中即选）；binMap: 平台 -> bin 入口
+githubTop:
+  - repo: BurntSushi/ripgrep
+    name: ripgrep
+    display: ripgrep
+    description: 超快 grep 替代
+    homepage: https://github.com/BurntSushi/ripgrep
+    license: MIT
+    assetMap:
+      windows/amd64: [pc-windows-msvc.zip, win64.zip, windows-x86_64.zip]
+      darwin/amd64: [apple-darwin.tar.gz, macos-x86_64.tar.gz]
+      darwin/arm64: [aarch64-apple-darwin.tar.gz, macos-aarch64.tar.gz]
+      linux/amd64: [unknown-linux-musl.tar.gz, linux-x86_64.tar.gz]
+      linux/arm64: [aarch64-unknown-linux-gnu.tar.gz, linux-aarch64.tar.gz]
+    binMap:
+      windows/amd64: [rg.exe]
+      darwin/amd64: [rg]
+      darwin/arm64: [rg]
+      linux/amd64: [rg]
+      linux/arm64: [rg]
+    test: rg --version
+  - repo: sharkdp/fd
+    name: fd
+    display: fd
+    description: 简单快速的 find 替代
+    homepage: https://github.com/sharkdp/fd
+    license: MIT
+    assetMap:
+      windows/amd64: [pc-windows-msvc.zip]
+      darwin/amd64: [apple-darwin.tar.gz]
+      darwin/arm64: [aarch64-apple-darwin.tar.gz]
+      linux/amd64: [unknown-linux-musl.tar.gz]
+      linux/arm64: [aarch64-unknown-linux-gnu.tar.gz]
+    binMap:
+      windows/amd64: [fd.exe]
+      darwin/amd64: [fd]
+      darwin/arm64: [fd]
+      linux/amd64: [fd]
+      linux/arm64: [fd]
+    test: fd --version
+  - repo: junegunn/fzf
+    name: fzf
+    display: fzf
+    description: 命令行模糊查找器
+    homepage: https://github.com/junegunn/fzf
+    license: MIT
+    assetMap:
+      windows/amd64: [windows_amd64.zip]
+      darwin/arm64: [darwin_arm64.tar.gz]
+      darwin/amd64: [darwin_amd64.tar.gz]
+      linux/amd64: [linux_amd64.tar.gz]
+      linux/arm64: [linux_arm64.tar.gz]
+    binMap:
+      windows/amd64: [fzf.exe]
+      darwin/amd64: [fzf]
+      darwin/arm64: [fzf]
+      linux/amd64: [fzf]
+      linux/arm64: [fzf]
+    test: fzf --version
