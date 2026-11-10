@@ -1,216 +1,214 @@
-# verx registry-importer 全量配置：全部源全收，不设限。
-# 跑法：所有源只 COLLECT 进合并器，同名包按 os/arch 合并后一次落盘，
-# 一个软件一条 manifests/<name>/<name>.yaml，多平台行都在 platforms 里。
-# limit/max* 语义：0 或不写 = 全量；>0 = 只收前 N（调试用，正式跑全量不要设）。
+# verx registry-importer 同步配置：按软件源开关，全量默认全收。
+# 跑法：importer all 按 enabled=true 的源逐个 COLLECT 进合并器，
+# 同名包按 os/arch 合并后一次落盘，一个软件一条 manifests/<name>/<name>.yaml。
+# 语义统一：enabled=false 直接跳过该源；limit/max*=0 或不写 = 全量；>0 = 只收前 N（调试用）。
 # GITHUB_TOKEN 必配，否则列桶/列ports 很快被限流。
+# 想加新软件只往 github.top 加一项即可（release 资产名各家不同，只能手写模板）。
 
-# A. Scoop 全桶：Main ~1300 + Extras ~1000 + Versions 全收，不再手写 apps。
-# 原 scoopBuckets 手动补漏已删（全桶已覆盖，写了也重复）。
-scoopFull:
-  - repo: ScoopInstaller/Main
-    limit: 0
-  - repo: ScoopInstaller/Extras
-    limit: 0
-  - repo: ScoopInstaller/Versions
-    limit: 0
+all:
+  enabled: true
+  workers: 16
 
-# B. Winget 全量：microsoft/winget-pkgs 全枚举（~10万+，只产 windows/amd64）。
-# full=true 全收；packages 非空则只跑这几个（调试用）。
+scoop:
+  enabled: true
+  buckets:
+    - repo: ScoopInstaller/Main
+      limit: 0
+    - repo: ScoopInstaller/Extras
+      limit: 0
+    - repo: ScoopInstaller/Versions
+      limit: 0
+
 winget:
+  enabled: true
   full: true
   packages: []
 
-# C. GitHub 精选：repo + verx 名 + 资产映射模板，产 5 平台最全行。
-# 这是唯一需要手写模板的源（release 资产名各家不同，枚举不了），
-# 进合并器后覆盖/补齐同名 Windows-only（ripgrep/fd/fzf 等以此为准）。
-# 想加新软件只往这里加一项即可，不用动代码。
-githubTop:
-  - repo: BurntSushi/ripgrep
-    name: ripgrep
-    display: ripgrep
-    description: 超快 grep 替代
-    homepage: https://github.com/BurntSushi/ripgrep
-    license: MIT
-    assetMap:
-      windows/amd64: [pc-windows-msvc.zip, win64.zip, windows-x86_64.zip]
-      darwin/amd64: [apple-darwin.tar.gz, macos-x86_64.tar.gz]
-      darwin/arm64: [aarch64-apple-darwin.tar.gz, macos-aarch64.tar.gz]
-      linux/amd64: [unknown-linux-musl.tar.gz, linux-x86_64.tar.gz]
-      linux/arm64: [aarch64-unknown-linux-gnu.tar.gz, linux-aarch64.tar.gz]
-    binMap:
-      windows/amd64: [rg.exe]
-      darwin/amd64: [rg]
-      darwin/arm64: [rg]
-      linux/amd64: [rg]
-      linux/arm64: [rg]
-    test: rg --version
-  - repo: sharkdp/fd
-    name: fd
-    display: fd
-    description: 简单快速的 find 替代
-    homepage: https://github.com/sharkdp/fd
-    license: MIT
-    assetMap:
-      windows/amd64: [pc-windows-msvc.zip]
-      darwin/amd64: [apple-darwin.tar.gz]
-      darwin/arm64: [aarch64-apple-darwin.tar.gz]
-      linux/amd64: [unknown-linux-musl.tar.gz]
-      linux/arm64: [aarch64-unknown-linux-gnu.tar.gz]
-    binMap:
-      windows/amd64: [fd.exe]
-      darwin/amd64: [fd]
-      darwin/arm64: [fd]
-      linux/amd64: [fd]
-      linux/arm64: [fd]
-    test: fd --version
-  - repo: junegunn/fzf
-    name: fzf
-    display: fzf
-    description: 命令行模糊查找器
-    homepage: https://github.com/junegunn/fzf
-    license: MIT
-    assetMap:
-      windows/amd64: [windows_amd64.zip]
-      darwin/arm64: [darwin_arm64.tar.gz]
-      darwin/amd64: [darwin_amd64.tar.gz]
-      linux/amd64: [linux_amd64.tar.gz]
-      linux/arm64: [linux_arm64.tar.gz]
-    binMap:
-      windows/amd64: [fzf.exe]
-      darwin/amd64: [fzf]
-      darwin/arm64: [fzf]
-      linux/amd64: [fzf]
-      linux/arm64: [fzf]
-    test: fzf --version
-  # --- 跨平台第二批：全部 5 平台自动匹配，无 assetMap 即走默认关键字 ---
-  - repo: sharkdp/bat
-    name: bat
-    display: bat
-    description: 带高亮的 cat 替代
-    homepage: https://github.com/sharkdp/bat
-    license: MIT
-    test: bat --version
-  - repo: eza-community/eza
-    name: eza
-    display: eza
-    description: 现代 ls 替代
-    homepage: https://github.com/eza-community/eza
-    license: MIT
-    test: eza --version
-  - repo: ajeetdsouza/zoxide
-    name: zoxide
-    display: zoxide
-    description: 更聪明的 cd
-    homepage: https://github.com/ajeetdsouza/zoxide
-    license: MIT
-    test: zoxide --version
-  - repo: starship/starship
-    name: starship
-    display: starship
-    description: 跨 shell 极简高配提示符
-    homepage: https://starship.rs
-    license: ISC
-    test: starship --version
-  - repo: dandavison/delta
-    name: delta
-    display: delta
-    description: git 更好看的 diff
-    homepage: https://github.com/dandavison/delta
-    license: MIT
-    test: delta --version
-  - repo: ClementTsang/bottom
-    name: bottom
-    display: bottom
-    description: 图形化 top 替代
-    homepage: https://github.com/ClementTsang/bottom
-    license: MIT
-    test: btm --version
-    binMap:
-      windows/amd64: [btm.exe]
-      darwin/amd64: [btm]
-      darwin/arm64: [btm]
-      linux/amd64: [btm]
-      linux/arm64: [btm]
-  - repo: bootandy/dust
-    name: dust
-    display: dust
-    description: 更直观的 du
-    homepage: https://github.com/bootandy/dust
-    license: Apache-2.0
-    test: dust --version
-  - repo: cli/cli
-    name: gh-cli
-    display: gh
-    description: GitHub 官方命令行
-    homepage: https://cli.github.com
-    license: MIT
-    test: gh --version
-    binMap:
-      windows/amd64: [gh.exe]
-      darwin/amd64: [gh]
-      darwin/arm64: [gh]
-      linux/amd64: [gh]
-      linux/arm64: [gh]
-  - repo: jesseduffield/lazygit
-    name: lazygit
-    display: lazygit
-    description: Git 终端 UI
-    homepage: https://github.com/jesseduffield/lazygit
-    license: MIT
-    test: lazygit --version
-  - repo: neovim/neovim
-    name: neovim
-    display: neovim
-    description: 高配 vim
-    homepage: https://neovim.io
-    license: Apache-2.0
-    test: nvim --version
-    binMap:
-      windows/amd64: [nvim.exe]
-      darwin/amd64: [nvim]
-      darwin/arm64: [nvim]
-      linux/amd64: [nvim]
-      linux/arm64: [nvim]
-  - repo: jqlang/jq
-    name: jq-cli
-    display: jq
-    description: JSON 命令行处理
-    homepage: https://jqlang.github.io/jq/
-    license: MIT
-    test: jq --version
-    binMap:
-      windows/amd64: [jq.exe]
-      darwin/amd64: [jq]
-      darwin/arm64: [jq]
-      linux/amd64: [jq]
-      linux/arm64: [jq]
-  - repo: mikefarah/yq
-    name: yq-cli
-    display: yq
-    description: YAML/JSON 命令行处理
-    homepage: https://github.com/mikefarah/yq
-    license: MIT
-    test: yq --version
-    binMap:
-      windows/amd64: [yq.exe]
-      darwin/amd64: [yq]
-      darwin/arm64: [yq]
-      linux/amd64: [yq]
-      linux/arm64: [yq]
-
-# D. Homebrew 全量：formula bottle 复用上游 hash + cask mac 专属。
-# 全量 = ~8000 formula + ~6000 cask；只下 2 个大 index，不逐个下载，最快。
 brew:
+  enabled: true
   maxFormula: 0
   maxCask: 0
 
-# E. Arch 官方仓全量（pacman/paru 源，只产 linux/amd64）。
-# full=true 时枚举 Core+Extra 全仓（~15000+）；packages 非空则只跑这几个（调试用）。
 arch:
+  enabled: true
   full: true
   packages: []
 
-# F. VCPKG 全量：microsoft/vcpkg ports 全枚举（~2000+，多为 lib 源码包）。
-# limit<=0 全量；全量重（逐个下载算 hash），CI 靠并发+增量跑。
 vcpkg:
+  enabled: true
   limit: 0
+
+github:
+  enabled: false
+  top:
+    - repo: BurntSushi/ripgrep
+      name: ripgrep
+      display: ripgrep
+      description: 超快 grep 替代
+      homepage: https://github.com/BurntSushi/ripgrep
+      license: MIT
+      assetMap:
+        windows/amd64: [pc-windows-msvc.zip, win64.zip, windows-x86_64.zip]
+        darwin/amd64: [apple-darwin.tar.gz, macos-x86_64.tar.gz]
+        darwin/arm64: [aarch64-apple-darwin.tar.gz, macos-aarch64.tar.gz]
+        linux/amd64: [unknown-linux-musl.tar.gz, linux-x86_64.tar.gz]
+        linux/arm64: [aarch64-unknown-linux-gnu.tar.gz, linux-aarch64.tar.gz]
+      binMap:
+        windows/amd64: [rg.exe]
+        darwin/amd64: [rg]
+        darwin/arm64: [rg]
+        linux/amd64: [rg]
+        linux/arm64: [rg]
+      test: rg --version
+    - repo: sharkdp/fd
+      name: fd
+      display: fd
+      description: 简单快速的 find 替代
+      homepage: https://github.com/sharkdp/fd
+      license: MIT
+      assetMap:
+        windows/amd64: [pc-windows-msvc.zip]
+        darwin/amd64: [apple-darwin.tar.gz]
+        darwin/arm64: [aarch64-apple-darwin.tar.gz]
+        linux/amd64: [unknown-linux-musl.tar.gz]
+        linux/arm64: [aarch64-unknown-linux-gnu.tar.gz]
+      binMap:
+        windows/amd64: [fd.exe]
+        darwin/amd64: [fd]
+        darwin/arm64: [fd]
+        linux/amd64: [fd]
+        linux/arm64: [fd]
+      test: fd --version
+    - repo: junegunn/fzf
+      name: fzf
+      display: fzf
+      description: 命令行模糊查找器
+      homepage: https://github.com/junegunn/fzf
+      license: MIT
+      assetMap:
+        windows/amd64: [windows_amd64.zip]
+        darwin/arm64: [darwin_arm64.tar.gz]
+        darwin/amd64: [darwin_amd64.tar.gz]
+        linux/amd64: [linux_amd64.tar.gz]
+        linux/arm64: [linux_arm64.tar.gz]
+      binMap:
+        windows/amd64: [fzf.exe]
+        darwin/amd64: [fzf]
+        darwin/arm64: [fzf]
+        linux/amd64: [fzf]
+        linux/arm64: [fzf]
+      test: fzf --version
+    - repo: sharkdp/bat
+      name: bat
+      display: bat
+      description: 带高亮的 cat 替代
+      homepage: https://github.com/sharkdp/bat
+      license: MIT
+      test: bat --version
+    - repo: eza-community/eza
+      name: eza
+      display: eza
+      description: 现代 ls 替代
+      homepage: https://github.com/eza-community/eza
+      license: MIT
+      test: eza --version
+    - repo: ajeetdsouza/zoxide
+      name: zoxide
+      display: zoxide
+      description: 更聪明的 cd
+      homepage: https://github.com/ajeetdsouza/zoxide
+      license: MIT
+      test: zoxide --version
+    - repo: starship/starship
+      name: starship
+      display: starship
+      description: 跨 shell 极简高配提示符
+      homepage: https://starship.rs
+      license: ISC
+      test: starship --version
+    - repo: dandavison/delta
+      name: delta
+      display: delta
+      description: git 更好看的 diff
+      homepage: https://github.com/dandavison/delta
+      license: MIT
+      test: delta --version
+    - repo: ClementTsang/bottom
+      name: bottom
+      display: bottom
+      description: 图形化 top 替代
+      homepage: https://github.com/ClementTsang/bottom
+      license: MIT
+      test: btm --version
+      binMap:
+        windows/amd64: [btm.exe]
+        darwin/amd64: [btm]
+        darwin/arm64: [btm]
+        linux/amd64: [btm]
+        linux/arm64: [btm]
+    - repo: bootandy/dust
+      name: dust
+      display: dust
+      description: 更直观的 du
+      homepage: https://github.com/bootandy/dust
+      license: Apache-2.0
+      test: dust --version
+    - repo: cli/cli
+      name: gh-cli
+      display: gh
+      description: GitHub 官方命令行
+      homepage: https://cli.github.com
+      license: MIT
+      test: gh --version
+      binMap:
+        windows/amd64: [gh.exe]
+        darwin/amd64: [gh]
+        darwin/arm64: [gh]
+        linux/amd64: [gh]
+        linux/arm64: [gh]
+    - repo: jesseduffield/lazygit
+      name: lazygit
+      display: lazygit
+      description: Git 终端 UI
+      homepage: https://github.com/jesseduffield/lazygit
+      license: MIT
+      test: lazygit --version
+    - repo: neovim/neovim
+      name: neovim
+      display: neovim
+      description: 高配 vim
+      homepage: https://neovim.io
+      license: Apache-2.0
+      test: nvim --version
+      binMap:
+        windows/amd64: [nvim.exe]
+        darwin/amd64: [nvim]
+        darwin/arm64: [nvim]
+        linux/amd64: [nvim]
+        linux/arm64: [nvim]
+    - repo: jqlang/jq
+      name: jq-cli
+      display: jq
+      description: JSON 命令行处理
+      homepage: https://jqlang.github.io/jq/
+      license: MIT
+      test: jq --version
+      binMap:
+        windows/amd64: [jq.exe]
+        darwin/amd64: [jq]
+        darwin/arm64: [jq]
+        linux/amd64: [jq]
+        linux/arm64: [jq]
+    - repo: mikefarah/yq
+      name: yq-cli
+      display: yq
+      description: YAML/JSON 命令行处理
+      homepage: https://github.com/mikefarah/yq
+      license: MIT
+      test: yq --version
+      binMap:
+        windows/amd64: [yq.exe]
+        darwin/amd64: [yq]
+        darwin/arm64: [yq]
+        linux/amd64: [yq]
+        linux/arm64: [yq]

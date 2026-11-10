@@ -14,7 +14,7 @@
 - `arch.go` E 路：Arch 官方仓 Core+Extra 全仓枚举（pacman/paru 源，只产 linux/amd64）
 - `vcpkg.go` F 路：microsoft/vcpkg ports 全枚举，全量转 lib 源码包（三平台同源，下载算 hash）
 - `common.go` 下载/hash/合并器/merger/runJobs 并发池/写盘公共函数
-- `config.yaml` 全量清单：Scoop 全桶 ~2500 + Winget 全枚举（~10万） + GitHub 精选 15 + Brew 全量（~8000+~6000） + Arch 全仓（~15000） + VCPKG 全量（~2000+）；0/不写=全量，>0=只收前 N（调试用）
+- `config.yaml` 同步配置器：`all/scoop/winget/brew/arch/vcpkg/github` 各源独立 `enabled` 开关；0/不写=全量，>0=只收前 N（调试用）；github 默认 `enabled: false` 先不同步
 
 ## 本地跑
 

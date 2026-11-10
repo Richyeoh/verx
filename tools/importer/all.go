@@ -11,31 +11,40 @@ import (
 )
 
 type fullConfig struct {
-	// Scoop 全桶：枚举 bucket/*.json 全收；limit<=0 全量
-	ScoopFull []struct {
-		Repo  string `yaml:"repo"`
-		Limit int    `yaml:"limit"`
-	} `yaml:"scoopFull"`
-	// Winget 全量：full=true 全枚举；packages 非空只跑这几个（调试用）
+	All struct {
+		Enabled bool `yaml:"enabled"`
+		Workers int  `yaml:"workers"`
+	} `yaml:"all"`
+	Scoop struct {
+		Enabled bool `yaml:"enabled"`
+		Buckets []struct {
+			Repo  string `yaml:"repo"`
+			Limit int    `yaml:"limit"`
+		} `yaml:"buckets"`
+	} `yaml:"scoop"`
 	Winget struct {
+		Enabled  bool     `yaml:"enabled"`
 		Full     bool     `yaml:"full"`
 		Packages []string `yaml:"packages"`
 	} `yaml:"winget"`
-	GitHubTop []githubTemplate `yaml:"githubTop"`
-	// Homebrew 全量：只复用上游 hash；max*<=0 全量
 	Brew struct {
-		MaxFormula int `yaml:"maxFormula"`
-		MaxCask    int `yaml:"maxCask"`
+		Enabled    bool `yaml:"enabled"`
+		MaxFormula int  `yaml:"maxFormula"`
+		MaxCask    int  `yaml:"maxCask"`
 	} `yaml:"brew"`
-	// Arch 全量：full=true 枚举 Core+Extra 全仓；packages 非空只跑这几个
 	Arch struct {
+		Enabled  bool     `yaml:"enabled"`
 		Full     bool     `yaml:"full"`
 		Packages []string `yaml:"packages"`
 	} `yaml:"arch"`
-	// VCPKG 全量：limit<=0 全量
 	Vcpkg struct {
-		Limit int `yaml:"limit"`
+		Enabled bool `yaml:"enabled"`
+		Limit   int  `yaml:"limit"`
 	} `yaml:"vcpkg"`
+	GitHub struct {
+		Enabled bool             `yaml:"enabled"`
+		Top     []githubTemplate `yaml:"top"`
+	} `yaml:"github"`
 }
 
 func loadConfig(path string) (*fullConfig, error) {
@@ -50,7 +59,7 @@ func loadConfig(path string) (*fullConfig, error) {
 	return &c, nil
 }
 
-// runAll 真全量：Scoop 全桶 + Winget 全枚举 + Arch 全仓 + VCPKG 全枚举 + Brew 全量 + GitHub 精选。
+// runAll 按源开关跑全量：scoop + winget + arch + vcpkg + brew + github。
 // 多源合并：同名包在 merger 里按 os/arch 合并平台行后一次落盘，
 // 如 ripgrep = scoop(windows) + brew(darwin/linux) + github(5 平台) 合成一条 verx manifest。
 // 全程并发（worker 池），单个失败只记错继续跑；全部写进 out/manifests/<name>/<name>.yaml。
@@ -58,6 +67,10 @@ func runAll(configPath, outDir string) error {
 	c, err := loadConfig(configPath)
 	if err != nil {
 		return err
+	}
+	workers := c.All.Workers
+	if workers <= 0 {
+		workers = 16
 	}
 	var mu sync.Mutex
 	ok, fail := 0, 0
@@ -78,48 +91,66 @@ func runAll(configPath, outDir string) error {
 	mg := newMerger()
 	collect := func(m *manifest.Manifest) { mg.add(m) }
 
-	// A. Scoop 全桶（内部并发）
-	for _, b := range c.ScoopFull {
-		importScoopAll(b.Repo, b.Limit, collect, report)
-	}
-	// B. Winget 全量（内部并发）：只产 windows/amd64，进合并器补行
-	if len(c.Winget.Packages) > 0 {
-		importWingetAll(c.Winget.Packages, collect, report)
-	} else if c.Winget.Full {
-		pkgs, err := listWingetPackages()
-		if err != nil {
-			report("winget/list", err)
-		} else {
-			fmt.Printf("winget 全枚举: %d 个\n", len(pkgs))
-			importWingetAll(pkgs, collect, report)
+	if c.Scoop.Enabled {
+		for _, b := range c.Scoop.Buckets {
+			importScoopAll(b.Repo, b.Limit, collect, report)
 		}
+	} else {
+		fmt.Println("skip scoop (enabled=false)")
 	}
-	// E. Arch 全量（内部并发）：只产 linux/amd64，进合并器补行
-	if len(c.Arch.Packages) > 0 {
-		importArchAll(c.Arch.Packages, collect, report)
-	} else if c.Arch.Full {
-		pkgs, err := listArchFull()
-		if err != nil {
-			report("arch/list", err)
-		} else {
-			fmt.Printf("arch 全枚举: %d 个\n", len(pkgs))
-			importArchAll(pkgs, collect, report)
+	if c.Winget.Enabled {
+		if len(c.Winget.Packages) > 0 {
+			importWingetAll(c.Winget.Packages, collect, report)
+		} else if c.Winget.Full {
+			pkgs, err := listWingetPackages()
+			if err != nil {
+				report("winget/list", err)
+			} else {
+				fmt.Printf("winget 全枚举: %d 个\n", len(pkgs))
+				importWingetAll(pkgs, collect, report)
+			}
 		}
+	} else {
+		fmt.Println("skip winget (enabled=false)")
 	}
-	// F. VCPKG 全枚举（内部并发，多为 lib 源码包）
-	importVcpkgAll(c.Vcpkg.Limit, collect, report)
-	// D. Homebrew 全量：formula bottle + cask，只复用上游 hash（本地解析，最快）
-	importBrewAll(c.Brew.MaxFormula, c.Brew.MaxCask, collect, report)
-	// C. GitHub 精选（并发）：5 平台最全，进合并器覆盖/补齐同名 Windows-only
-	runJobs(c.GitHubTop, 16, func(t githubTemplate) {
-		m, err := importGitHub(t.Repo, t.Name, &t)
-		if err != nil {
-			report("github/"+t.Repo, err)
-			return
+	if c.Arch.Enabled {
+		if len(c.Arch.Packages) > 0 {
+			importArchAll(c.Arch.Packages, collect, report)
+		} else if c.Arch.Full {
+			pkgs, err := listArchFull()
+			if err != nil {
+				report("arch/list", err)
+			} else {
+				fmt.Printf("arch 全枚举: %d 个\n", len(pkgs))
+				importArchAll(pkgs, collect, report)
+			}
 		}
-		collect(m)
-		fmt.Printf("COLLECT github/%s\n", m.Name)
-	})
+	} else {
+		fmt.Println("skip arch (enabled=false)")
+	}
+	if c.Vcpkg.Enabled {
+		importVcpkgAll(c.Vcpkg.Limit, collect, report)
+	} else {
+		fmt.Println("skip vcpkg (enabled=false)")
+	}
+	if c.Brew.Enabled {
+		importBrewAll(c.Brew.MaxFormula, c.Brew.MaxCask, collect, report)
+	} else {
+		fmt.Println("skip brew (enabled=false)")
+	}
+	if c.GitHub.Enabled {
+		runJobs(c.GitHub.Top, workers, func(t githubTemplate) {
+			m, err := importGitHub(t.Repo, t.Name, &t)
+			if err != nil {
+				report("github/"+t.Repo, err)
+				return
+			}
+			collect(m)
+			fmt.Printf("COLLECT github/%s\n", m.Name)
+		})
+	} else {
+		fmt.Println("skip github (enabled=false)")
+	}
 
 	// 统一落盘：同名多源已合成一条 manifest；只有这里才计成功数
 	mok, mfail := mg.flush(outDir, report)
