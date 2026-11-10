@@ -5,6 +5,9 @@ dist/
 *.test
 *.out
 
+# VERX_HOME 本地运行目录（比如 E:\Verx\verx\.verx），绝不进仓库
+.verx/
+
 # Go cache
 /vendor/
 
