@@ -82,3 +82,118 @@ githubTop:
       linux/amd64: [fzf]
       linux/arm64: [fzf]
     test: fzf --version
+  # --- 跨平台第二批：全部 5 平台自动匹配，无 assetMap 即走默认关键字 ---
+  - repo: sharkdp/bat
+    name: bat
+    display: bat
+    description: 带高亮的 cat 替代
+    homepage: https://github.com/sharkdp/bat
+    license: MIT
+    test: bat --version
+  - repo: eza-community/eza
+    name: eza
+    display: eza
+    description: 现代 ls 替代
+    homepage: https://github.com/eza-community/eza
+    license: MIT
+    test: eza --version
+  - repo: ajeetdsouza/zoxide
+    name: zoxide
+    display: zoxide
+    description: 更聪明的 cd
+    homepage: https://github.com/ajeetdsouza/zoxide
+    license: MIT
+    test: zoxide --version
+  - repo: starship/starship
+    name: starship
+    display: starship
+    description: 跨 shell 极简高配提示符
+    homepage: https://starship.rs
+    license: ISC
+    test: starship --version
+  - repo: dandavison/delta
+    name: delta
+    display: delta
+    description: git 更好看的 diff
+    homepage: https://github.com/dandavison/delta
+    license: MIT
+    test: delta --version
+  - repo: ClementTsang/bottom
+    name: bottom
+    display: bottom
+    description: 图形化 top 替代
+    homepage: https://github.com/ClementTsang/bottom
+    license: MIT
+    test: btm --version
+    binMap:
+      windows/amd64: [btm.exe]
+      darwin/amd64: [btm]
+      darwin/arm64: [btm]
+      linux/amd64: [btm]
+      linux/arm64: [btm]
+  - repo: bootandy/dust
+    name: dust
+    display: dust
+    description: 更直观的 du
+    homepage: https://github.com/bootandy/dust
+    license: Apache-2.0
+    test: dust --version
+  - repo: cli/cli
+    name: gh-cli
+    display: gh
+    description: GitHub 官方命令行
+    homepage: https://cli.github.com
+    license: MIT
+    test: gh --version
+    binMap:
+      windows/amd64: [gh.exe]
+      darwin/amd64: [gh]
+      darwin/arm64: [gh]
+      linux/amd64: [gh]
+      linux/arm64: [gh]
+  - repo: jesseduffield/lazygit
+    name: lazygit
+    display: lazygit
+    description: Git 终端 UI
+    homepage: https://github.com/jesseduffield/lazygit
+    license: MIT
+    test: lazygit --version
+  - repo: neovim/neovim
+    name: neovim
+    display: neovim
+    description: 高配 vim
+    homepage: https://neovim.io
+    license: Apache-2.0
+    test: nvim --version
+    binMap:
+      windows/amd64: [nvim.exe]
+      darwin/amd64: [nvim]
+      darwin/arm64: [nvim]
+      linux/amd64: [nvim]
+      linux/arm64: [nvim]
+  - repo: jqlang/jq
+    name: jq-cli
+    display: jq
+    description: JSON 命令行处理
+    homepage: https://jqlang.github.io/jq/
+    license: MIT
+    test: jq --version
+    binMap:
+      windows/amd64: [jq.exe]
+      darwin/amd64: [jq]
+      darwin/arm64: [jq]
+      linux/amd64: [jq]
+      linux/arm64: [jq]
+  - repo: mikefarah/yq
+    name: yq-cli
+    display: yq
+    description: YAML/JSON 命令行处理
+    homepage: https://github.com/mikefarah/yq
+    license: MIT
+    test: yq --version
+    binMap:
+      windows/amd64: [yq.exe]
+      darwin/amd64: [yq]
+      darwin/arm64: [yq]
+      linux/amd64: [yq]
+      linux/arm64: [yq]

@@ -113,7 +113,7 @@ func importGitHub(repo, name string, tmpl *githubTemplate) (*manifest.Manifest, 
 		if len(keywordsHit) == 0 {
 			keywordsHit = defaultAssetKeywords(p.os, p.arch)
 		}
-		assetURL := pickAsset(rel.Assets, keywordsHit)
+		assetURL := pickAsset(rel.Assets, keywordsHit, p.os, p.arch)
 		if assetURL == "" {
 			continue // 缺行即不支持
 		}
@@ -155,6 +155,17 @@ func importGitHub(repo, name string, tmpl *githubTemplate) (*manifest.Manifest, 
 		Test:        test,
 		Caveats:     "由 GitHub " + repo + " latest 自动转制",
 	}
+	// 单文件 exe/msi 资产（如 jq）必须带 installer，否则 Validate 直接拒
+	for _, p := range out {
+		lower := strings.ToLower(p.URL)
+		if strings.HasSuffix(lower, ".msi") || strings.HasSuffix(lower, ".exe") {
+			m.Installer = &manifest.Installer{
+				Silent:    "/S",
+				Uninstall: "verx remove " + name + "@" + verStr,
+			}
+			break
+		}
+	}
 	return m, nil
 }
 
@@ -167,22 +178,53 @@ func pickAsset(assets []struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
-}, keywords []string) string {
+}, keywords []string, goos, goarch string) string {
 	lower := func(s string) string { return strings.ToLower(s) }
 	for _, kw := range keywords {
 		k := lower(kw)
 		for _, a := range assets {
 			n := lower(a.Name)
-			if strings.Contains(n, k) {
-				// 排除 .sha256/.sig/.sbom 等校验文件本身
-				if strings.HasSuffix(n, ".sha256") || strings.HasSuffix(n, ".sha256sum") || strings.HasSuffix(n, ".sig") || strings.HasSuffix(n, ".sbom") {
-					continue
-				}
-				return a.BrowserDownloadURL
+			if !strings.Contains(n, k) {
+				continue
 			}
+			// 排除 .sha256/.sig/.sbom 等校验文件本身
+			if strings.HasSuffix(n, ".sha256") || strings.HasSuffix(n, ".sha256sum") || strings.HasSuffix(n, ".sig") || strings.HasSuffix(n, ".sbom") {
+				continue
+			}
+			if !archOk(n, goarch) {
+				continue
+			}
+			return a.BrowserDownloadURL
 		}
 	}
 	return ""
+}
+
+// archOk 防止 amd64 命中 aarch64/arm64 包（ripgrep/fd 之前就错配过）。
+func archOk(lowerName, goarch string) bool {
+	n := lowerName
+	if goarch == "amd64" {
+		// amd64 行绝不允许 arm 资产
+		for _, bad := range []string{"aarch64", "arm64", "armv7", "armv6", "armhf", "i686", "i386", "32-bit", "win32", "-32.", "_32."} {
+			if strings.Contains(n, bad) {
+				return false
+			}
+		}
+		return true
+	}
+	if goarch == "arm64" {
+		// arm64 行绝不允许 x86_64/amd64 资产
+		for _, bad := range []string{"x86_64", "x86-64", "amd64", "x64-windows", "x64_macos", "win64", "x64-linux", "i686", "i386", "intel"} {
+			// 例外：文件名本身就是 aarch64 时，里面不会出现这些 bad（aarch64 不含 x86_64），可直接过
+			if strings.Contains(n, bad) {
+				// aarch64-apple-darwin.tar.gz 不含上面任何 bad，直接放行；
+				// x86_64-apple-darwin 则命中 x86_64 被拒，符合预期
+				return false
+			}
+		}
+		return true
+	}
+	return true
 }
 
 func defaultAssetKeywords(os, arch string) []string {
