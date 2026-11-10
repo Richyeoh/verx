@@ -15,7 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: verx/verx
           path: verx
       - uses: actions/setup-go@v5
         with:
@@ -34,7 +33,7 @@ jobs:
       - name: checkout registry
         uses: actions/checkout@v4
         with:
-          repository: verx/registry
+          repository: ${{ github.repository_owner }}/registry
           path: registry
           token: ${{ secrets.REGISTRY_BOT_TOKEN }}
       - name: copy manifests
