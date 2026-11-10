@@ -81,23 +81,15 @@ func importArch(pkg string) (*manifest.Manifest, error) {
 	}, nil
 }
 
-// importArchAll 批量：config 里 archPackages 列表；单个失败跳过。
-func importArchAll(pkgs []string, outDir string, report func(string, error)) (int, int) {
-	ok, fail := 0, 0
+// importArchAll 批量：config 里 archPackages 列表；单个失败跳过。进合并器补 linux 行。
+func importArchAll(pkgs []string, collect func(*manifest.Manifest), report func(string, error)) {
 	for _, p := range pkgs {
 		m, err := importArch(p)
 		if err != nil {
 			report("arch/"+p, err)
-			fail++
 			continue
 		}
-		if err := writeManifest(outDir, m); err != nil {
-			report("arch/"+m.Name, err)
-			fail++
-			continue
-		}
-		report("arch/"+m.Name, nil)
-		ok++
+		collect(m)
+		fmt.Printf("COLLECT arch/%s\n", m.Name)
 	}
-	return ok, fail
 }

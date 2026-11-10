@@ -250,3 +250,77 @@ func importScoop(bucket, app string) (*manifest.Manifest, error) {
 	}
 	return m, nil
 }
+
+// ---- 全桶枚举（原 scoop_full.go 已并入本文件）：git/trees 一次拿全 bucket/*.json ----
+
+type gitTreeResp struct {
+	Tree []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	} `json:"tree"`
+	Truncated bool `json:"truncated"`
+}
+
+// listScoopApps 返回 bucket 目录下全部 app 名（不带 .json）。
+func listScoopApps(repo string) ([]string, error) {
+	repo = strings.TrimSuffix(repo, ".git")
+	// master/main 双分支兼容
+	cands := []string{
+		"https://api.github.com/repos/" + repo + "/git/trees/master?recursive=1",
+		"https://api.github.com/repos/" + repo + "/git/trees/main?recursive=1",
+	}
+	var lastErr error
+	for _, u := range cands {
+		var tr gitTreeResp
+		if err := getJSON(u, &tr); err != nil {
+			lastErr = err
+			continue
+		}
+		var out []string
+		for _, e := range tr.Tree {
+			if e.Type != "blob" {
+				continue
+			}
+			// 只收 bucket/*.json
+			if !strings.HasPrefix(e.Path, "bucket/") || !strings.HasSuffix(e.Path, ".json") {
+				continue
+			}
+			name := strings.TrimSuffix(strings.TrimPrefix(e.Path, "bucket/"), ".json")
+			if name != "" {
+				out = append(out, name)
+			}
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+		lastErr = fmt.Errorf("bucket 空: %s", repo)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("列桶失败: %s", repo)
+	}
+	return nil, lastErr
+}
+
+// importScoopAll 全桶转制：limit<=0 全量；单个失败跳过继续。
+// 只进合并器，不直接落盘；成功只 COLLECT，最终落盘才计数。
+func importScoopAll(repo string, limit int, collect func(*manifest.Manifest), report func(string, error)) {
+	apps, err := listScoopApps(repo)
+	if err != nil {
+		report("scoop/"+repo, err)
+		return
+	}
+	n := 0
+	for _, app := range apps {
+		if limit > 0 && n >= limit {
+			break
+		}
+		n++
+		m, err := importScoop(repo, app)
+		if err != nil {
+			report("scoop/"+app, err)
+			continue
+		}
+		collect(m)
+		fmt.Printf("COLLECT scoop/%s\n", m.Name)
+	}
+}

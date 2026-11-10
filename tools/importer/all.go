@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/verx/verx/internal/manifest"
 )
 
 type fullConfig struct {
@@ -45,7 +47,8 @@ func loadConfig(path string) (*fullConfig, error) {
 }
 
 // runAll 按 config 跑全量：Scoop 全桶 + Winget + Arch + VCPKG + Brew + GitHub Top。
-// 优先级：越靠后越全（GitHub 5 平台最后写，覆盖同名 Windows-only）。
+// 多源合并：同名包在 merger 里按 os/arch 合并平台行后一次落盘，
+// 如 ripgrep = scoop(windows) + brew(darwin/linux) + github(5 平台) 合成一条 verx manifest。
 // 单个失败只记错继续跑，最后汇总；全部写进 out/manifests/<name>/<name>.yaml。
 func runAll(configPath, outDir string) error {
 	c, err := loadConfig(configPath)
@@ -65,6 +68,9 @@ func runAll(configPath, outDir string) error {
 		}
 	}
 
+	mg := newMerger()
+	collect := func(m *manifest.Manifest) { mg.add(m) }
+
 	for _, b := range c.ScoopBuckets {
 		for _, app := range b.Apps {
 			m, err := importScoop(b.Repo, app)
@@ -72,12 +78,13 @@ func runAll(configPath, outDir string) error {
 				report("scoop/"+app, err)
 				continue
 			}
-			report("scoop/"+m.Name, writeManifest(outDir, m))
+			collect(m)
+			fmt.Printf("COLLECT scoop/%s\n", m.Name)
 		}
 	}
-	// Scoop 全桶：枚举 bucket/*.json 全收，不再手写（report 已计数，不重复加）
+	// Scoop 全桶：枚举 bucket/*.json 全收，不再手写
 	for _, b := range c.ScoopFull {
-		importScoopAll(b.Repo, b.Limit, outDir, report)
+		importScoopAll(b.Repo, b.Limit, collect, report)
 	}
 	for _, pkg := range c.WingetPackages {
 		m, err := importWinget(pkg)
@@ -85,21 +92,22 @@ func runAll(configPath, outDir string) error {
 			report("winget/"+pkg, err)
 			continue
 		}
-		report("winget/"+m.Name, writeManifest(outDir, m))
+		collect(m)
+		fmt.Printf("COLLECT winget/%s\n", m.Name)
 	}
-	// Arch 官方仓批量（pacman/paru 源）：只产 linux/amd64，先写
+	// Arch 官方仓批量（pacman/paru 源）：只产 linux/amd64，进合并器补行
 	if len(c.ArchPackages) > 0 {
-		importArchAll(c.ArchPackages, outDir, report)
+		importArchAll(c.ArchPackages, collect, report)
 	}
-	// VCPKG（多为 lib 源码包）：先写
+	// VCPKG（多为 lib 源码包）：进合并器
 	if c.Vcpkg.Limit != 0 {
-		importVcpkgAll(c.Vcpkg.Limit, outDir, report)
+		importVcpkgAll(c.Vcpkg.Limit, collect, report)
 	}
-	// Homebrew 全量：formula bottle + cask，只复用上游 hash，先写
+	// Homebrew 全量：formula bottle + cask，只复用上游 hash，进合并器
 	if c.Brew.MaxFormula > 0 || c.Brew.MaxCask > 0 {
-		importBrewAll(c.Brew.MaxFormula, c.Brew.MaxCask, outDir, report)
+		importBrewAll(c.Brew.MaxFormula, c.Brew.MaxCask, collect, report)
 	}
-	// GitHub Top 最后写：5 平台覆盖同名 Windows-only（ripgrep/fd/fzf 等以此为准）
+	// GitHub Top：5 平台最全，进合并器覆盖/补齐同名 Windows-only
 	for _, t := range c.GitHubTop {
 		t := t
 		m, err := importGitHub(t.Repo, t.Name, &t)
@@ -107,8 +115,14 @@ func runAll(configPath, outDir string) error {
 			report("github/"+t.Repo, err)
 			continue
 		}
-		report("github/"+m.Name, writeManifest(outDir, m))
+		collect(m)
+		fmt.Printf("COLLECT github/%s\n", m.Name)
 	}
+
+	// 统一落盘：同名多源已合成一条 manifest；只有这里才计成功数
+	mok, mfail := mg.flush(outDir, report)
+	ok += mok
+	fail += mfail
 
 	fmt.Printf("\n汇总: 成功 %d，失败 %d\n", ok, fail)
 	for _, f := range failed {

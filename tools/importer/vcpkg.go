@@ -150,27 +150,19 @@ func importVcpkg(port string) (*manifest.Manifest, error) {
 	}, nil
 }
 
-func importVcpkgAll(limit int, outDir string, report func(string, error)) (int, int) {
+func importVcpkgAll(limit int, collect func(*manifest.Manifest), report func(string, error)) {
 	ports, err := listVcpkgPorts(limit)
 	if err != nil {
 		report("vcpkg/list", err)
-		return 0, 1
+		return
 	}
-	ok, fail := 0, 0
 	for _, p := range ports {
 		m, err := importVcpkg(p)
 		if err != nil {
 			report("vcpkg/"+p, err)
-			fail++
 			continue
 		}
-		if err := writeManifest(outDir, m); err != nil {
-			report("vcpkg/"+m.Name, err)
-			fail++
-			continue
-		}
-		report("vcpkg/"+m.Name, nil)
-		ok++
+		collect(m)
+		fmt.Printf("COLLECT vcpkg/%s\n", m.Name)
 	}
-	return ok, fail
 }
