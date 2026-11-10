@@ -156,13 +156,14 @@ func importVcpkgAll(limit int, collect func(*manifest.Manifest), report func(str
 		report("vcpkg/list", err)
 		return
 	}
-	for _, p := range ports {
+	fmt.Printf("vcpkg: %d 个，并发转制中…\n", len(ports))
+	runJobs(ports, 16, func(p string) {
 		m, err := importVcpkg(p)
 		if err != nil {
 			report("vcpkg/"+p, err)
-			continue
+			return
 		}
 		collect(m)
 		fmt.Printf("COLLECT vcpkg/%s\n", m.Name)
-	}
+	})
 }

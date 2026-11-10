@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
@@ -195,4 +196,65 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
+}
+
+// listWingetPackages 全枚举 microsoft/winget-pkgs 下全部 PackageIdentifier。
+// manifests/<首字母>/<Publisher>/<Package> 三层：逐层 contents API 枚举，内部并发。
+func listWingetPackages() ([]string, error) {
+	type entry struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	// 第一层：manifests 下字母目录
+	var letters []entry
+	if err := getJSON("https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests", &letters); err != nil {
+		return nil, fmt.Errorf("winget 列字母目录失败: %w", err)
+	}
+	var outMu sync.Mutex
+	var out []string
+	add := func(id string) {
+		outMu.Lock()
+		out = append(out, id)
+		outMu.Unlock()
+	}
+	runJobs(letters, 16, func(ld entry) {
+		if ld.Type != "dir" {
+			return
+		}
+		var pubs []entry
+		if err := getJSON("https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/"+ld.Name, &pubs); err != nil {
+			return
+		}
+		for _, p := range pubs {
+			if p.Type != "dir" {
+				continue
+			}
+			var pkgs []entry
+			if err := getJSON("https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/"+ld.Name+"/"+p.Name, &pkgs); err != nil {
+				continue
+			}
+			for _, k := range pkgs {
+				if k.Type != "dir" {
+					continue
+				}
+				// Publisher 目录名即 p.Name，完整 ID = Publisher + "." + 尾段
+				add(p.Name + "." + k.Name)
+			}
+		}
+	})
+	return out, nil
+}
+
+// importWingetAll 批量（内部 16 并发）：只进合并器补 windows 行。
+func importWingetAll(pkgs []string, collect func(*manifest.Manifest), report func(string, error)) {
+	fmt.Printf("winget: %d 个，并发转制中…\n", len(pkgs))
+	runJobs(pkgs, 16, func(pkg string) {
+		m, err := importWinget(pkg)
+		if err != nil {
+			report("winget/"+pkg, err)
+			return
+		}
+		collect(m)
+		fmt.Printf("COLLECT winget/%s\n", m.Name)
+	})
 }

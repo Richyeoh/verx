@@ -302,25 +302,24 @@ func listScoopApps(repo string) ([]string, error) {
 }
 
 // importScoopAll 全桶转制：limit<=0 全量；单个失败跳过继续。
-// 只进合并器，不直接落盘；成功只 COLLECT，最终落盘才计数。
+// 只进合并器，不直接落盘；成功只 COLLECT，最终落盘才计数。内部 32 并发。
 func importScoopAll(repo string, limit int, collect func(*manifest.Manifest), report func(string, error)) {
 	apps, err := listScoopApps(repo)
 	if err != nil {
 		report("scoop/"+repo, err)
 		return
 	}
-	n := 0
-	for _, app := range apps {
-		if limit > 0 && n >= limit {
-			break
-		}
-		n++
+	if limit > 0 && len(apps) > limit {
+		apps = apps[:limit]
+	}
+	fmt.Printf("scoop %s: %d 个，并发转制中…\n", repo, len(apps))
+	runJobs(apps, 32, func(app string) {
 		m, err := importScoop(repo, app)
 		if err != nil {
 			report("scoop/"+app, err)
-			continue
+			return
 		}
 		collect(m)
 		fmt.Printf("COLLECT scoop/%s\n", m.Name)
-	}
+	})
 }

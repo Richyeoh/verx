@@ -161,44 +161,40 @@ func importBrewCask(c brewCask) (*manifest.Manifest, error) {
 }
 
 // importBrewAll 全量：limit<=0 不限；casks 默认只收前 N（dmg 体积大但只复用 hash，不下载）。
-// 进合并器，不直接落盘。
+// 进合并器，不直接落盘。本地解析，32 并发。
 func importBrewAll(maxFormula, maxCask int, collect func(*manifest.Manifest), report func(string, error)) {
 	var formulae []brewFormula
 	if err := getJSON("https://formulae.brew.sh/api/formula.json", &formulae); err != nil {
 		report("brew/formulae-index", err)
 		return
 	}
-	n := 0
-	for i := range formulae {
-		if maxFormula > 0 && n >= maxFormula {
-			break
-		}
-		n++
-		m, err := importBrewFormula(formulae[i])
+	if maxFormula > 0 && len(formulae) > maxFormula {
+		formulae = formulae[:maxFormula]
+	}
+	fmt.Printf("brew formula: %d 个，并发转制中…\n", len(formulae))
+	runJobs(formulae, 32, func(f brewFormula) {
+		m, err := importBrewFormula(f)
 		if err != nil {
-			report("brew/"+formulae[i].Name, err)
-			continue
+			report("brew/"+f.Name, err)
+			return
 		}
 		collect(m)
-		fmt.Printf("COLLECT brew/%s\n", m.Name)
-	}
+	})
 	var casks []brewCask
 	if err := getJSON("https://formulae.brew.sh/api/cask.json", &casks); err != nil {
 		report("brew/casks-index", err)
 		return
 	}
-	n = 0
-	for i := range casks {
-		if maxCask > 0 && n >= maxCask {
-			break
-		}
-		n++
-		m, err := importBrewCask(casks[i])
+	if maxCask > 0 && len(casks) > maxCask {
+		casks = casks[:maxCask]
+	}
+	fmt.Printf("brew cask: %d 个，并发转制中…\n", len(casks))
+	runJobs(casks, 32, func(ck brewCask) {
+		m, err := importBrewCask(ck)
 		if err != nil {
-			report("brew-cask/"+casks[i].Token, err)
-			continue
+			report("brew-cask/"+ck.Token, err)
+			return
 		}
 		collect(m)
-		fmt.Printf("COLLECT brew-cask/%s\n", m.Name)
-	}
+	})
 }

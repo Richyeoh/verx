@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/verx/verx/internal/manifest"
 )
@@ -81,15 +82,79 @@ func importArch(pkg string) (*manifest.Manifest, error) {
 	}, nil
 }
 
-// importArchAll 批量：config 里 archPackages 列表；单个失败跳过。进合并器补 linux 行。
+// importArchAll 批量：并发 16，只进合并器补 linux 行。
 func importArchAll(pkgs []string, collect func(*manifest.Manifest), report func(string, error)) {
-	for _, p := range pkgs {
+	fmt.Printf("arch: %d 个，并发转制中…\n", len(pkgs))
+	runJobs(pkgs, 16, func(p string) {
 		m, err := importArch(p)
 		if err != nil {
 			report("arch/"+p, err)
-			continue
+			return
 		}
 		collect(m)
 		fmt.Printf("COLLECT arch/%s\n", m.Name)
+	})
+}
+
+// listArchFull 枚举 Core+Extra 全仓 x86_64 包名（~15000+，pacman/paru 源）。
+// 用官方 search/json 分页拉全量，只取包名，后面转制再逐个查详情。
+func listArchFull() ([]string, error) {
+	type pageResp struct {
+		NumPages int `json:"num_pages"`
+		Results  []struct {
+			Pkgname string `json:"pkgname"`
+		} `json:"results"`
 	}
+	// 先拿第一页看总页数
+	var first pageResp
+	u0 := "https://archlinux.org/packages/search/json/?arch=x86_64&repo=Core&repo=Extra&page=1"
+	if err := getJSON(u0, &first); err != nil {
+		return nil, fmt.Errorf("arch 列全仓失败: %w", err)
+	}
+	pages := first.NumPages
+	if pages <= 0 {
+		pages = 1
+	}
+	seen := map[string]bool{}
+	var mu sync.Mutex
+	var out []string
+	addPage := func(results []struct {
+		Pkgname string `json:"pkgname"`
+	}) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, r := range results {
+			if r.Pkgname == "" || seen[r.Pkgname] {
+				continue
+			}
+			seen[r.Pkgname] = true
+			out = append(out, r.Pkgname)
+		}
+	}
+	addPage(first.Results)
+	if pages > 1 {
+		idx := make([]int, 0, pages-1)
+		for i := 2; i <= pages; i++ {
+			idx = append(idx, i)
+		}
+		var firstErr error
+		var errMu sync.Mutex
+		runJobs(idx, 8, func(p int) {
+			var pr pageResp
+			u := fmt.Sprintf("https://archlinux.org/packages/search/json/?arch=x86_64&repo=Core&repo=Extra&page=%d", p)
+			if err := getJSON(u, &pr); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+			addPage(pr.Results)
+		})
+		if len(out) == 0 && firstErr != nil {
+			return nil, firstErr
+		}
+	}
+	return out, nil
 }

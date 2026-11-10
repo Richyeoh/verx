@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -157,17 +158,22 @@ func writeManifest(outDir string, m *manifest.Manifest) error {
 // darwin/linux，arch 只有 linux/amd64），直接 writeManifest 会互相覆盖。
 // 这里用 merger 按包名收齐所有来源，再按 OS/Arch 去重合并后一次落盘。
 
-type merger map[string]*manifest.Manifest
+type merger struct {
+	mu sync.Mutex
+	m  map[string]*manifest.Manifest
+}
 
-func newMerger() merger { return map[string]*manifest.Manifest{} }
+func newMerger() *merger { return &merger{m: map[string]*manifest.Manifest{}} }
 
-// add 把 incoming 并入同名包：平台按 os/arch 去重（同平台 incoming 覆盖），
+// add 把 incoming 并入同名包：线程安全，平台按 os/arch 去重（同平台 incoming 覆盖），
 // 版本取新者（ver.Compare），元数据缺啥补啥，test 统一去 .exe 跨平台。
-func (mg merger) add(incoming *manifest.Manifest) {
+func (mg *merger) add(incoming *manifest.Manifest) {
 	if incoming == nil || incoming.Name == "" {
 		return
 	}
-	ex, ok := mg[incoming.Name]
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	ex, ok := mg.m[incoming.Name]
 	if !ok {
 		cp := *incoming
 		cp.Platforms = append([]manifest.Platform(nil), incoming.Platforms...)
@@ -184,7 +190,7 @@ func (mg merger) add(incoming *manifest.Manifest) {
 			}
 		}
 		normalizeMergedTest(&cp)
-		mg[incoming.Name] = &cp
+		mg.m[incoming.Name] = &cp
 		return
 	}
 	// 版本：incoming 更新则刷新版本相关元数据
@@ -303,18 +309,66 @@ func normalizeMergedTest(m *manifest.Manifest) {
 }
 
 // flush 统一落盘：逐个 Validate，坏包只记错不中断。
-func (mg merger) flush(outDir string, report func(string, error)) (int, int) {
+func (mg *merger) flush(outDir string, report func(string, error)) (int, int) {
 	ok, fail := 0, 0
-	for name, m := range mg {
+	mg.mu.Lock()
+	names := make([]string, 0, len(mg.m))
+	for name := range mg.m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	manifests := make([]*manifest.Manifest, 0, len(names))
+	for _, n := range names {
+		manifests = append(manifests, mg.m[n])
+	}
+	mg.mu.Unlock()
+	for i, m := range manifests {
 		if err := writeManifest(outDir, m); err != nil {
-			report("merge/"+name, err)
+			report("merge/"+names[i], err)
 			fail++
 			continue
 		}
-		report("merge/"+name, nil)
+		report("merge/"+names[i], nil)
 		ok++
 	}
 	return ok, fail
+}
+
+// size 返回已收包数（调试用）。
+func (mg *merger) size() int {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return len(mg.m)
+}
+
+// runJobs 并发跑 tasks（worker 池），单任务失败只 report 不中断。
+// 全量动辄上万个包，串行跑几小时，并发 16 基本压到 10 分钟级。
+func runJobs[T any](tasks []T, workers int, fn func(T)) {
+	if workers <= 0 {
+		workers = 16
+	}
+	if len(tasks) == 0 {
+		return
+	}
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+	ch := make(chan T)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range ch {
+				fn(t)
+			}
+		}()
+	}
+	for _, t := range tasks {
+		ch <- t
+	}
+	close(ch)
+	wg.Wait()
 }
 
 func guessStrip(url string) int {

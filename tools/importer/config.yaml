@@ -1,38 +1,29 @@
-# verx registry-importer 全量配置：Scoop 全桶 + Winget + Arch + VCPKG + Brew + GitHub Top。
-# 优先级越靠后越全（GitHub 5 平台最后写，覆盖同名 Windows-only）。
-# 全部产物只写 manifests/<name>/<name>.yaml，registry.yaml 不动。
-# limit<=0 全量；CI 首批配小批量，跑稳后再放开。
+# verx registry-importer 全量配置：全部源全收，不设限。
+# 跑法：所有源只 COLLECT 进合并器，同名包按 os/arch 合并后一次落盘，
+# 一个软件一条 manifests/<name>/<name>.yaml，多平台行都在 platforms 里。
+# limit/max* 语义：0 或不写 = 全量；>0 = 只收前 N（调试用，正式跑全量不要设）。
+# GITHUB_TOKEN 必配，否则列桶/列ports 很快被限流。
 
-# A0. Scoop 全桶枚举（不再手写 apps）：Main ~1300 + Extras ~1000，全收
+# A. Scoop 全桶：Main ~1300 + Extras ~1000 + Versions 全收，不再手写 apps。
+# 原 scoopBuckets 手动补漏已删（全桶已覆盖，写了也重复）。
 scoopFull:
   - repo: ScoopInstaller/Main
     limit: 0
   - repo: ScoopInstaller/Extras
     limit: 0
   - repo: ScoopInstaller/Versions
-    limit: 200
+    limit: 0
 
-# A. Scoop 手动补漏（全桶枚举不到的再写这里）
-scoopBuckets:
-  - repo: ScoopInstaller/Main
-    apps: [7zip, git, ripgrep, fd, fzf, bat, eza, jq, yq, curl, wget, aria2, neovim, starship, lazygit, delta, gh, bottom, dust, zoxide]
-  - repo: ScoopInstaller/Extras
-    apps: [vscode, windows-terminal, powertoys]
+# B. Winget 全量：microsoft/winget-pkgs 全枚举（~10万+，只产 windows/amd64）。
+# full=true 全收；packages 非空则只跑这几个（调试用）。
+winget:
+  full: true
+  packages: []
 
-# B. Winget 批量转制：PackageIdentifier 列表，自动取最新版
-wingetPackages:
-  - BurntSushi.Ripgrep.MSVC
-  - Git.Git
-  - Neovim.Neovim
-  - Starship.Starship
-  - ajeetdsouza.zoxide
-  - sharkdp.fd
-  - sharkdp.bat
-  - junegunn.fzf
-  - jqlang.jq
-
-# C. GitHub Top100 精选：repo + verx 名 + 资产映射模板
-# assetMap: 平台 -> 资产名包含的关键字（任一命中即选）；binMap: 平台 -> bin 入口
+# C. GitHub 精选：repo + verx 名 + 资产映射模板，产 5 平台最全行。
+# 这是唯一需要手写模板的源（release 资产名各家不同，枚举不了），
+# 进合并器后覆盖/补齐同名 Windows-only（ripgrep/fd/fzf 等以此为准）。
+# 想加新软件只往这里加一项即可，不用动代码。
 githubTop:
   - repo: BurntSushi/ripgrep
     name: ripgrep
@@ -207,16 +198,19 @@ githubTop:
       linux/amd64: [yq]
       linux/arm64: [yq]
 
-# D. Homebrew 全量（formula bottle 复用上游 hash + cask mac 专属）
-# 首批配 500+200，跑稳后改 0 全量（~8000 formula + ~6000 cask）
+# D. Homebrew 全量：formula bottle 复用上游 hash + cask mac 专属。
+# 全量 = ~8000 formula + ~6000 cask；只下 2 个大 index，不逐个下载，最快。
 brew:
-  maxFormula: 500
-  maxCask: 200
+  maxFormula: 0
+  maxCask: 0
 
-# E. Arch 官方仓批量（pacman/paru 源，只产 linux/amd64）
-# 热门 CLI 先跑 40 个，后续加量
-archPackages: [ripgrep, fd, fzf, bat, eza, zoxide, starship, delta, bottom, dust, neovim, git, curl, wget, jq, yq, lazygit, gh, aria2, tmux, htop, btop, ncdu, tree, zsh, fish, lsd, procs, duf, broot, helix, kakoune, zellij, alacritty, wezterm, nushell, atuin, direnv]
+# E. Arch 官方仓全量（pacman/paru 源，只产 linux/amd64）。
+# full=true 时枚举 Core+Extra 全仓（~15000+）；packages 非空则只跑这几个（调试用）。
+arch:
+  full: true
+  packages: []
 
-# F. VCPKG 全量（多为 lib 源码包，需构建；首批 100 个增量跑）
+# F. VCPKG 全量：microsoft/vcpkg ports 全枚举（~2000+，多为 lib 源码包）。
+# limit<=0 全量；全量重（逐个下载算 hash），CI 靠并发+增量跑。
 vcpkg:
-  limit: 100
+  limit: 0
