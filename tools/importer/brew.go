@@ -160,41 +160,92 @@ func importBrewCask(c brewCask) (*manifest.Manifest, error) {
 	}, nil
 }
 
-// importBrewAll 全量：limit<=0 不限；casks 默认只收前 N（dmg 体积大但只复用 hash，不下载）。
-// 进合并器，不直接落盘。本地解析，32 并发。
-func importBrewAll(maxFormula, maxCask int, collect func(*manifest.Manifest), report func(string, error)) {
+// importBrewPackages 清单驱动：拉一次 formula/cask 全索引，内存过滤命中清单的包。
+// formulaOnly=true 时跳过 cask（除非在 caskAllowlist 里）；cask 无可用 sha 直接拒。
+// 只进合并器，Name 统一回清单名。
+func importBrewPackages(pkgs []string, allow map[string]bool, formulaOnly bool, caskAllowlist []string, workers int, collect func(*manifest.Manifest), report func(string, error)) {
+	allowNorm := map[string]string{}
+	for _, p := range pkgs {
+		w := sanitizeName(strings.ToLower(strings.TrimSpace(p)))
+		if w == "" {
+			continue
+		}
+		allowNorm[w] = w
+	}
+	white := map[string]bool{}
+	for _, c := range caskAllowlist {
+		white[sanitizeName(strings.ToLower(strings.TrimSpace(c)))] = true
+	}
 	var formulae []brewFormula
 	if err := getJSON("https://formulae.brew.sh/api/formula.json", &formulae); err != nil {
 		report("brew/formulae-index", err)
 		return
 	}
-	if maxFormula > 0 && len(formulae) > maxFormula {
-		formulae = formulae[:maxFormula]
+	type fjob struct {
+		want string
+		f    brewFormula
 	}
-	fmt.Printf("brew formula: %d 个，并发转制中…\n", len(formulae))
-	runJobs(formulae, 32, func(f brewFormula) {
-		m, err := importBrewFormula(f)
-		if err != nil {
-			report("brew/"+f.Name, err)
-			return
+	var fjobs []fjob
+	seenF := map[string]bool{}
+	for _, f := range formulae {
+		norm := sanitizeName(strings.ToLower(strings.TrimSpace(f.Name)))
+		want, ok := allowNorm[norm]
+		if !ok {
+			if !allow[strings.ToLower(strings.TrimSpace(f.Name))] {
+				continue
+			}
+			want = sanitizeName(strings.ToLower(strings.TrimSpace(f.Name)))
 		}
+		if seenF[norm] {
+			continue
+		}
+		seenF[norm] = true
+		fjobs = append(fjobs, fjob{want: want, f: f})
+	}
+	fmt.Printf("brew formula 清单: %d 个，命中上游 %d 个，并发转制中…\n", len(pkgs), len(fjobs))
+	runJobs(fjobs, workers, func(j fjob) {
+		m, err := importBrewFormula(j.f)
+		if err != nil {
+			return // 静默跳过：无 bottle 等
+		}
+		m.Name = sanitizeName(j.want)
+		m.Provides = []string{m.Name}
 		collect(m)
 	})
+	if formulaOnly && len(white) == 0 {
+		return
+	}
 	var casks []brewCask
 	if err := getJSON("https://formulae.brew.sh/api/cask.json", &casks); err != nil {
 		report("brew/casks-index", err)
 		return
 	}
-	if maxCask > 0 && len(casks) > maxCask {
-		casks = casks[:maxCask]
+	type cjob struct {
+		want string
+		c    brewCask
 	}
-	fmt.Printf("brew cask: %d 个，并发转制中…\n", len(casks))
-	runJobs(casks, 32, func(ck brewCask) {
-		m, err := importBrewCask(ck)
+	var cjobs []cjob
+	for _, ck := range casks {
+		norm := sanitizeName(strings.ToLower(strings.TrimSpace(ck.Token)))
+		if _, ok := allowNorm[norm]; !ok {
+			continue
+		}
+		if formulaOnly && !white[norm] {
+			continue
+		}
+		cjobs = append(cjobs, cjob{want: norm, c: ck})
+	}
+	if len(cjobs) == 0 {
+		return
+	}
+	fmt.Printf("brew cask 清单: 命中 %d 个，并发转制中…\n", len(cjobs))
+	runJobs(cjobs, workers, func(j cjob) {
+		m, err := importBrewCask(j.c)
 		if err != nil {
-			report("brew-cask/"+ck.Token, err)
 			return
 		}
+		m.Name = sanitizeName(j.want)
+		m.Provides = []string{m.Name}
 		collect(m)
 	})
 }

@@ -19,15 +19,28 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: verx/go.mod
+      # 本地浅克隆缓存：scoop 桶 / winget-pkgs / vcpkg 全走 git 协议，
+      # 缓存命中后只做 depth=1 的增量 pull，不耗 GitHub API 配额。
+      - name: cache importer clones
+        uses: actions/cache@v4
+        with:
+          path: /tmp/verx-importer
+          key: importer-clones-${{ github.run_id }}
+          restore-keys: |
+            importer-clones-
       - name: run importer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERX_IMPORTER_CACHE: /tmp/verx-importer
         run: |
           cd verx
           go mod download
           go vet ./tools/importer/...
           go run ./tools/importer all --config tools/importer/config.yaml --out /tmp/registry-out
-          ls -R /tmp/registry-out | head -50
+          echo "=== out layout ==="
+          ls /tmp/registry-out
+          echo "=== manifest count ==="
+          find /tmp/registry-out/manifests -name '*.yaml' | wc -l
           echo "=== validate manifests ==="
           go run ./tools/importer validate --dir /tmp/registry-out
       - name: checkout registry
@@ -38,9 +51,13 @@ jobs:
           token: ${{ secrets.REGISTRY_BOT_TOKEN }}
       - name: copy manifests
         run: |
-          cp -r /tmp/registry-out/manifests/. registry/manifests/
+          # 全量镜像同步：registry/manifests 与本次产物完全一致，
+          # 上游已删除的包在这里一并删除，避免 registry 只增不减无限膨胀。
+          rsync -a --delete /tmp/registry-out/manifests/ registry/manifests/
           cd registry
           git status --short | head -30
+          echo "=== changed files ==="
+          git status --short | wc -l
       - name: create PR
         uses: peter-evans/create-pull-request@v7
         with:
@@ -49,5 +66,5 @@ jobs:
           branch: bot/import
           delete-branch: true
           title: "bot: registry import ${{ github.run_number }}"
-          body: "Scoop/Winget/GitHub 自动转制，有变化才提。hash 全部真实，CI 会跑 manifest 校验。每天跑都更新同一个分支，不会堆分支；PR 合并后分支自动删除。"
+          body: "Scoop/Winget/GitHub 自动转制，有变化才提。hash 全部真实，CI 会跑 manifest 校验。每天跑都更新同一个分支，不会堆分支；PR 合并后分支自动删除。\n\nAPI 预算：scoop/winget/vcpkg 走本地浅克隆（零 API），brew/arch 走各自官网，只有 github 一路消耗 GitHub API，日志尾部有 `GitHub API 调用 x 次` 统计。"
           commit-message: "bot: import manifests"

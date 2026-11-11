@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -12,10 +14,10 @@ import (
 )
 
 type wingetInstaller struct {
-	Architecture   string `yaml:"Architecture"`
-	InstallerURL   string `yaml:"InstallerUrl"`
+	Architecture    string `yaml:"Architecture"`
+	InstallerURL    string `yaml:"InstallerUrl"`
 	InstallerSha256 string `yaml:"InstallerSha256"`
-	InstallerType  string `yaml:"InstallerType"`
+	InstallerType   string `yaml:"InstallerType"`
 	Scope          string `yaml:"Scope"`
 }
 
@@ -36,61 +38,99 @@ type wingetLocaleFile struct {
 	Homepage          string `yaml:"Homepage"`
 }
 
-// githubCodeSearch 是 search/code 返回的最小子集。
-type githubCodeSearch struct {
-	Items []struct {
-		Path string `json:"path"`
-	} `json:"items"`
+// wingetCloneDir 本地 no-checkout 克隆根目录，零 GitHub API。
+// 只拉 commit + tree（无 blob），枚举用 git ls-tree，文件内容走 CDN 按需拉。
+func wingetCloneDir() string { return filepath.Join(cacheDir(), "winget-pkgs") }
+
+func ensureWingetClone() error {
+	return cloneNoCheckout("microsoft/winget-pkgs", wingetCloneDir())
 }
 
-// importWinget 从 microsoft/winget-pkgs 转制单个包，只产 windows/amd64 一行。
-// 流程：contents API 列版本目录 -> 取最新版 -> 解析 x64 安装包 -> 补 locale 元数据。
-// 不用 search/code（需特殊权限且易 400），contents API 更稳。
-func importWinget(pkg string) (*manifest.Manifest, error) {
-	// 1. 按 winget 目录规则定位：manifests/<首字母小写>/<Publisher>/<PackageIdentifier>/
+// wingetVersionCache 全量时一次建好的 包 -> 最新版 映射，避免每个包再起 git 进程。
+var (
+	wingetVersionCache   = map[string]string{}
+	wingetVersionCacheMu sync.RWMutex
+)
+
+func wingetCachedVersion(pkg string) string {
+	wingetVersionCacheMu.RLock()
+	defer wingetVersionCacheMu.RUnlock()
+	return wingetVersionCache[pkg]
+}
+
+func wingetCacheVersions(all map[string]string) {
+	wingetVersionCacheMu.Lock()
+	defer wingetVersionCacheMu.Unlock()
+	for k, v := range all {
+		wingetVersionCache[k] = v
+	}
+}
+
+// wingetPkgDir 把 PackageIdentifier 映射到 manifests/<首字母>/<Publisher>/<ID> 相对路径。
+func wingetPkgRelDir(pkg string) string {
 	dot := strings.Index(pkg, ".")
 	if dot <= 0 {
-		return nil, fmt.Errorf("winget 包名非法: %s", pkg)
+		return ""
 	}
 	publisherDir := pkg[:dot]
 	letter := strings.ToLower(string(pkg[0]))
-	base := "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/" + letter + "/" + publisherDir + "/" + pkg
-	var entries []struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
+	return "manifests/" + letter + "/" + publisherDir + "/" + pkg
+}
+
+// wingetBestVersion 取包的最新版：先查全量缓存，缺失则单包 git ls-tree（单包调试用）。
+func wingetBestVersion(pkg string) (string, string, error) {
+	if v := wingetCachedVersion(pkg); v != "" {
+		return v, wingetPkgRelDir(pkg), nil
 	}
-	if err := getJSON(base, &entries); err != nil {
-		return nil, fmt.Errorf("winget 列版本失败 %s: %w", pkg, err)
+	rel := wingetPkgRelDir(pkg)
+	if rel == "" {
+		return "", "", fmt.Errorf("winget 包名非法: %s", pkg)
 	}
-	// 2. 从目录名里抽版本，选最新
-	bestVersion := ""
-	for _, e := range entries {
-		if e.Type != "dir" {
-			continue
-		}
-		v := strings.TrimSpace(e.Name)
+	if err := ensureWingetClone(); err != nil {
+		return "", "", err
+	}
+	vers, err := gitLsTreeDirs(wingetCloneDir(), rel)
+	if err != nil {
+		return "", "", fmt.Errorf("winget 列版本失败 %s: %w", pkg, err)
+	}
+	best := ""
+	for _, v := range vers {
+		v = strings.TrimSpace(v)
 		if v == "" {
 			continue
 		}
-		if bestVersion == "" || ver.Compare(v, bestVersion) > 0 {
-			bestVersion = v
+		if best == "" || ver.Compare(v, best) > 0 {
+			best = v
 		}
 	}
-	if bestVersion == "" {
-		return nil, fmt.Errorf("winget 未解析出版本: %s", pkg)
+	if best == "" {
+		return "", "", fmt.Errorf("winget 未解析出版本: %s", pkg)
 	}
-	dir := "manifests/" + letter + "/" + publisherDir + "/" + pkg + "/" + bestVersion
-	// 3. 取 installer.yaml
-	rawURL := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + dir + "/" + pkg + ".installer.yaml"
-	txt, err := getText(rawURL)
+	return best, rel, nil
+}
+
+// wingetRawFile 经 CDN 拉单个 yaml（raw.githubusercontent.com，不耗 API 配额，不带 token）。
+func wingetRawFile(relDir, version, file string) (string, error) {
+	// winget-pkgs 默认分支 master
+	u := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + relDir + "/" + version + "/" + file
+	return getText(u)
+}
+
+// importWinget 从本地枚举 + CDN 文件转制单个包，只产 windows/amd64 一行，全程零 GitHub API。
+func importWinget(pkg string) (*manifest.Manifest, error) {
+	bestVersion, relDir, err := wingetBestVersion(pkg)
 	if err != nil {
 		return nil, err
+	}
+	txt, err := wingetRawFile(relDir, bestVersion, pkg+".installer.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("winget 取 installer 失败 %s: %w", pkg, err)
 	}
 	var wf wingetInstallerFile
 	if err := yaml.Unmarshal([]byte(txt), &wf); err != nil {
 		return nil, fmt.Errorf("winget installer.yaml 解析失败: %w", err)
 	}
-	// 4. 选 x64 安装包：优先 portable/zip（免安装），其次 exe/msi
+	// 选 x64 安装包：优先 portable/zip（免安装），其次 exe/msi
 	var pick *wingetInstaller
 	pri := func(t string) int {
 		switch strings.ToLower(t) {
@@ -123,10 +163,9 @@ func importWinget(pkg string) (*manifest.Manifest, error) {
 	if !isHex64Full(pick.InstallerSha256) {
 		return nil, fmt.Errorf("winget sha256 非法（已拒）: %s", pkg)
 	}
-	// 5. 补元数据：同目录 locale.en-US.yaml
-	localeURL := "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/" + dir + "/" + pkg + ".locale.en-US.yaml"
+	// 补元数据：同目录 locale.en-US.yaml（CDN 拉，缺失不致命）
 	display, localePublisher, license, desc, homepage := pkg, "", "Unknown", pkg, "https://winget.run/pkg/"+pkg
-	if lt, err := getText(localeURL); err == nil {
+	if lt, err := wingetRawFile(relDir, bestVersion, pkg+".locale.en-US.yaml"); err == nil {
 		var lf wingetLocaleFile
 		if yaml.Unmarshal([]byte(lt), &lf) == nil {
 			if lf.PackageName != "" {
@@ -164,10 +203,10 @@ func importWinget(pkg string) (*manifest.Manifest, error) {
 		Platforms: []manifest.Platform{
 			{OS: "windows", Arch: "amd64", URL: pick.InstallerURL, SHA256: strings.ToLower(pick.InstallerSha256), Bin: []string{bin}, Strip: guessStrip(pick.InstallerURL)},
 		},
-		Test:   bin + " --version",
+		Test:    bin + " --version",
 		Caveats: "由 Winget 转制；原始 PackageIdentifier=" + pkg,
 	}
-	// msi/exe 必须带 installer.silent+uninstall（06 §3.1），否则 Validate 会拒
+	// msi/exe 必须带 installer.silent+uninstall，否则 Validate 会拒
 	lower := strings.ToLower(pick.InstallerURL)
 	if strings.HasSuffix(lower, ".msi") || strings.HasSuffix(lower, ".exe") {
 		m.Installer = &manifest.Installer{
@@ -198,63 +237,121 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// listWingetPackages 全枚举 microsoft/winget-pkgs 下全部 PackageIdentifier。
-// manifests/<首字母>/<Publisher>/<Package> 三层：逐层 contents API 枚举，内部并发。
+// listWingetPackages 全枚举本地 no-checkout 克隆下全部 PackageIdentifier。
+// 单次 git ls-tree -r 拿全量目录树，在内存里按 manifests/<首字母>/<Publisher>/<包>/<版本>
+// 分组，包级去重 + 每个包算出最新版写入缓存。零 GitHub API，零 blob 下载。
 func listWingetPackages() ([]string, error) {
-	type entry struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
+	if err := ensureWingetClone(); err != nil {
+		return nil, err
 	}
-	// 第一层：manifests 下字母目录
-	var letters []entry
-	if err := getJSON("https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests", &letters); err != nil {
-		return nil, fmt.Errorf("winget 列字母目录失败: %w", err)
+	dirs, err := gitLsTreeAllDirs(wingetCloneDir(), "manifests")
+	if err != nil {
+		return nil, fmt.Errorf("winget 本地枚举失败: %w", err)
 	}
-	var outMu sync.Mutex
+	// pkgID -> bestVersion
+	best := map[string]string{}
+	for _, d := range dirs {
+		parts := strings.Split(d, "/")
+		// 期望 manifests/<letter>/<publisher>/<pkg>[/<version>[/...]]
+		if len(parts) < 4 || parts[0] != "manifests" {
+			continue
+		}
+		pkg := parts[2] + "." + parts[3]
+		if len(parts) == 4 {
+			// 包目录本身：确保存在（版本在子目录里算）
+			if _, ok := best[pkg]; !ok {
+				best[pkg] = ""
+			}
+			continue
+		}
+		v := strings.TrimSpace(parts[4])
+		if v == "" {
+			continue
+		}
+		if cur := best[pkg]; cur == "" || ver.Compare(v, cur) > 0 {
+			best[pkg] = v
+		}
+	}
 	var out []string
-	add := func(id string) {
-		outMu.Lock()
-		out = append(out, id)
-		outMu.Unlock()
+	resolved := map[string]string{}
+	for pkg, v := range best {
+		if v == "" {
+			continue
+		}
+		out = append(out, pkg)
+		resolved[pkg] = v
 	}
-	runJobs(letters, 16, func(ld entry) {
-		if ld.Type != "dir" {
-			return
-		}
-		var pubs []entry
-		if err := getJSON("https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/"+ld.Name, &pubs); err != nil {
-			return
-		}
-		for _, p := range pubs {
-			if p.Type != "dir" {
-				continue
-			}
-			var pkgs []entry
-			if err := getJSON("https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/"+ld.Name+"/"+p.Name, &pkgs); err != nil {
-				continue
-			}
-			for _, k := range pkgs {
-				if k.Type != "dir" {
-					continue
-				}
-				// Publisher 目录名即 p.Name，完整 ID = Publisher + "." + 尾段
-				add(p.Name + "." + k.Name)
-			}
-		}
-	})
+	if len(out) == 0 {
+		// 兜底：tree 可能超大被截断？直接报错，别静默产出空 registry
+		return nil, fmt.Errorf("winget 本地枚举为空")
+	}
+	wingetCacheVersions(resolved)
+	sort.Strings(out)
 	return out, nil
 }
 
-// importWingetAll 批量（内部 16 并发）：只进合并器补 windows 行。
-func importWingetAll(pkgs []string, collect func(*manifest.Manifest), report func(string, error)) {
-	fmt.Printf("winget: %d 个，并发转制中…\n", len(pkgs))
-	runJobs(pkgs, 16, func(pkg string) {
-		m, err := importWinget(pkg)
-		if err != nil {
-			report("winget/"+pkg, err)
+// importWingetPackages 清单驱动：本地枚举一次建索引，只拉命中清单的包。
+// 匹配：verx 名 vs PackageIdentifier 尾段/全名归一化；未命中静默跳过。
+// 只进合并器，Name 统一回清单名，避免 MSVC/尾缀产出不同 name。
+func importWingetPackages(pkgs []string, allow map[string]bool, workers int, collect func(*manifest.Manifest), report func(string, error)) {
+	all, err := listWingetPackages()
+	if err != nil {
+		report("winget/list", err)
+		return
+	}
+	// 归一化索引：norm -> pkgIDs
+	idx := map[string][]string{}
+	addIdx := func(key, pkg string) {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
 			return
 		}
+		idx[key] = append(idx[key], pkg)
+	}
+	for _, pkg := range all {
+		addIdx(pkg, pkg)
+		seg := lastSegment(pkg)
+		addIdx(seg, pkg)
+		addIdx(sanitizeName(seg), pkg)
+		addIdx(sanitizeName(strings.ReplaceAll(pkg, ".", "-")), pkg)
+	}
+	type job struct {
+		want string
+		pkg  string
+	}
+	var jobs []job
+	seenPkg := map[string]bool{}
+	for _, want := range pkgs {
+		w := strings.ToLower(strings.TrimSpace(want))
+		if w == "" {
+			continue
+		}
+		cands := idx[w]
+		if len(cands) == 0 {
+			continue
+		}
+		// 同一上游包只拉一次（多个 verx 名命中同一 pkgID 时首个赢）
+		pick := cands[0]
+		for _, c := range cands[1:] {
+			if c < pick {
+				pick = c
+			}
+		}
+		if seenPkg[pick] {
+			continue
+		}
+		seenPkg[pick] = true
+		jobs = append(jobs, job{want: w, pkg: pick})
+	}
+	_ = allow
+	fmt.Printf("winget 清单: %d 个，命中上游 %d 个，并发转制中…\n", len(pkgs), len(jobs))
+	runJobs(jobs, workers, func(j job) {
+		m, err := importWinget(j.pkg)
+		if err != nil {
+			return // 静默跳过：winget 只补 windows 一行
+		}
+		m.Name = sanitizeName(j.want)
+		m.Provides = []string{m.Name}
 		collect(m)
-		fmt.Printf("COLLECT winget/%s\n", m.Name)
 	})
 }

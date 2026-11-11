@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -10,8 +12,8 @@ import (
 
 // VCPKG 全量：microsoft/vcpkg ports/<port>/vcpkg.json（~2000+，多为 lib）。
 // 转制为 kind=lib 源码包：三平台同源 tarball，exports 通用 include/lib。
-// portfile.cmake 里只有 SHA512（manifest 要 sha256），所以下载算 hash；
-// 全量太重，默认只收 limit 个（config 可配），剩下的每天增量跑。
+// portfile.cmake 里只有 SHA512（manifest 要 sha256），所以下载算 hash。
+// 枚举/元数据全部走本地浅克隆，零 GitHub API；唯一开销是每个 port 一次源码下载算 hash。
 
 type vcpkgMeta struct {
 	Name        string `json:"name"`
@@ -59,47 +61,38 @@ func vcpkgLicense(v any) string {
 	return "Unknown"
 }
 
-func listVcpkgPorts(limit int) ([]string, error) {
-	var tr gitTreeResp
-	if err := getJSON("https://api.github.com/repos/microsoft/vcpkg/git/trees/master?recursive=1", &tr); err != nil {
-		return nil, fmt.Errorf("列 vcpkg ports 失败: %w", err)
+func vcpkgCloneDir() string { return filepath.Join(cacheDir(), "vcpkg") }
+
+func ensureVcpkgClone() (string, error) {
+	if err := sparseClone("microsoft/vcpkg", vcpkgCloneDir(), []string{"ports"}); err != nil {
+		return "", err
 	}
-	seen := map[string]bool{}
-	var out []string
-	for _, e := range tr.Tree {
-		if e.Type != "blob" {
-			continue
-		}
-		// ports/<port>/vcpkg.json
-		if !strings.HasPrefix(e.Path, "ports/") || !strings.HasSuffix(e.Path, "/vcpkg.json") {
-			continue
-		}
-		port := strings.TrimSuffix(strings.TrimPrefix(e.Path, "ports/"), "/vcpkg.json")
-		if port == "" || strings.Contains(port, "/") || seen[port] {
-			continue
-		}
-		seen[port] = true
-		out = append(out, port)
-		if limit > 0 && len(out) >= limit {
-			break
-		}
+	return filepath.Join(vcpkgCloneDir(), "ports"), nil
+}
+
+func vcpkgPortDir(port string) (string, error) {
+	portsDir, err := ensureVcpkgClone()
+	if err != nil {
+		return "", err
 	}
-	return out, nil
+	return filepath.Join(portsDir, port), nil
 }
 
 func importVcpkg(port string) (*manifest.Manifest, error) {
-	base := "https://raw.githubusercontent.com/microsoft/vcpkg/master/ports/" + port + "/"
+	dir, err := vcpkgPortDir(port)
+	if err != nil {
+		return nil, err
+	}
 	var meta vcpkgMeta
-	if err := getJSON(base+"vcpkg.json", &meta); err != nil {
+	if err := readJSONFile(filepath.Join(dir, "vcpkg.json"), &meta); err != nil {
 		return nil, fmt.Errorf("vcpkg meta 失败 %s: %w", port, err)
 	}
-	// portfile 找源 tarball
-	pf, err := getText(base + "portfile.cmake")
+	pf, err := os.ReadFile(filepath.Join(dir, "portfile.cmake"))
 	if err != nil {
 		return nil, fmt.Errorf("vcpkg portfile 失败 %s: %w", port, err)
 	}
 	url := ""
-	for _, m := range portURLRe.FindAllStringSubmatch(pf, -1) {
+	for _, m := range portURLRe.FindAllStringSubmatch(string(pf), -1) {
 		u := strings.TrimSpace(m[1])
 		if strings.HasPrefix(u, "http") {
 			// 去掉 ${VERSION} 模板变量的条目（算不出固定 URL）
@@ -150,14 +143,11 @@ func importVcpkg(port string) (*manifest.Manifest, error) {
 	}, nil
 }
 
-func importVcpkgAll(limit int, collect func(*manifest.Manifest), report func(string, error)) {
-	ports, err := listVcpkgPorts(limit)
-	if err != nil {
-		report("vcpkg/list", err)
-		return
-	}
-	fmt.Printf("vcpkg: %d 个，并发转制中…\n", len(ports))
-	runJobs(ports, 16, func(p string) {
+// importVcpkgPackages 清单驱动（lib 与 app 隔离）：只拉 libPackages 显式列表。
+// 与 app 清单抢名也不合并（merger 按 kind 隔离直接丢弃），避免 lib/app 互串。
+func importVcpkgPackages(ports []string, workers int, collect func(*manifest.Manifest), report func(string, error)) {
+	fmt.Printf("vcpkg lib: %d 个，并发转制中…\n", len(ports))
+	runJobs(ports, workers, func(p string) {
 		m, err := importVcpkg(p)
 		if err != nil {
 			report("vcpkg/"+p, err)

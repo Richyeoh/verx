@@ -1,6 +1,6 @@
 package main
 
-// verx registry-importer：Scoop / Winget / GitHub Top 精选 -> verx manifest 批量转制。
+// verx registry-importer：清单驱动（5000+）-> verx manifest 批量转制。
 //
 // 定位：跑在 GitHub Actions 上（外网无超时），产物 manifests 直接提给
 // github.com/verx/registry，再由机器人推到 Gitee（gitee.com/verx/registry），
@@ -32,11 +32,15 @@ func usage() {
   importer validate --dir <registry-out>
 
 说明:
-  all      按 config.yaml 跑全量：scoopBuckets + wingetPackages + githubTop
-  scoop    单个 Scoop bucket JSON 转制
-  winget   单个 Winget 包转制（自动找最新版）
-  github   单个 GitHub 仓库 latest release 转制（需 config 模板或自动猜测）
+  all      按 config.yaml 跑清单（5000+）：scoop + winget + brew + vcpkg(lib) + github（各源独立 enabled 开关）
+  scoop    单个 Scoop bucket JSON 转制（优先本地浅克隆，零 API）
+  winget   单个 Winget 包转制（本地 ls-tree 枚举 + CDN 拉文件，零 API，自动找最新版）
+  github   单个 GitHub 仓库 latest release 转制（自动猜测资产关键字）
   validate 校验 out/manifests 下全部 yaml 能过 manifest.Validate
+
+环境:
+  GITHUB_TOKEN        只给 api.github.com 用（github 一路）；CDN/资产下载不带 token
+  VERX_IMPORTER_CACHE 本地浅克隆根目录（CI 建议 actions/cache，避免每次重拉大仓）
 `)
 }
 

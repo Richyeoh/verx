@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -19,55 +20,178 @@ import (
 	ver "github.com/verx/verx/internal/version"
 )
 
-var httpClient = &http.Client{Timeout: 120 * time.Second}
+var (
+	httpClient = &http.Client{Timeout: 120 * time.Second}
 
-func getJSON(url string, v any) error {
-	req, _ := http.NewRequest("GET", url, nil)
+	// GitHub API 调用计数：runAll 结束时打印，方便在 CI 日志里看预算。
+	apiCalls     int64
+	apiCallsMu   sync.Mutex
+	rateLimitHit int64
+)
+
+// githubToken 只在 api.github.com 上发送，避免把 PAT 泄漏给
+// raw.githubusercontent.com / objects.githubusercontent.com 等 CDN 域名。
+func githubToken() string { return strings.TrimSpace(os.Getenv("GITHUB_TOKEN")) }
+
+func shouldAuthForURL(url string) bool {
+	u := strings.ToLower(strings.TrimSpace(url))
+	// 只有 api.github.com 需要鉴权；其他域名一律不带 Authorization。
+	return strings.Contains(u, "://api.github.com/")
+}
+
+func countAPICall(url string) {
+	if !strings.Contains(strings.ToLower(url), "api.github.com") {
+		return
+	}
+	apiCallsMu.Lock()
+	apiCalls++
+	apiCallsMu.Unlock()
+}
+
+// APIStats 返回 (api调用次数, 限流命中次数)，runAll 汇总用。
+func APIStats() (int64, int64) {
+	apiCallsMu.Lock()
+	defer apiCallsMu.Unlock()
+	return apiCalls, rateLimitHit
+}
+
+func noteRateLimitHit() {
+	apiCallsMu.Lock()
+	rateLimitHit++
+	apiCallsMu.Unlock()
+}
+
+func newGitHubRequest(method, url string) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "verx-registry-importer/1.0")
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	if shouldAuthForURL(url) {
+		if tok := githubToken(); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("GET %s 失败: %w", url, err)
+	return req, nil
+}
+
+func getJSON(url string, v any) error {
+	return getJSONRetry(url, v, 3)
+}
+
+func getJSONRetry(url string, v any, retries int) error {
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*attempt) * time.Second)
+		}
+		req, err := newGitHubRequest("GET", url)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		countAPICall(url)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("GET %s 失败: %w", url, err)
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			return decodeJSON(bytes.NewReader(body), v)
+		}
+		// 限流：403 + Remaining=0 或 429 -> 等待后重试一次
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			noteRateLimitHit()
+			preview := strings.TrimSpace(string(body))
+			if len(preview) > 300 {
+				preview = preview[:300]
+			}
+			lastErr = fmt.Errorf("GET %s 返回 %d: %s", url, resp.StatusCode, preview)
+			// 二次请求里拿不到 header 了，这里保守等待后重试
+			if attempt < retries {
+				time.Sleep(time.Duration(5*(attempt+1)) * time.Second)
+				continue
+			}
+			return lastErr
+		}
+		if resp.StatusCode >= 500 && attempt < retries {
+			lastErr = fmt.Errorf("GET %s 返回 %d", url, resp.StatusCode)
+			continue
+		}
+		preview := strings.TrimSpace(string(body))
+		if len(preview) > 300 {
+			preview = preview[:300]
+		}
+		return fmt.Errorf("GET %s 返回 %d: %s", url, resp.StatusCode, preview)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("GET %s 返回 %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	if lastErr == nil {
+		lastErr = fmt.Errorf("GET %s 失败", url)
 	}
-	return decodeJSON(resp.Body, v)
+	return lastErr
 }
 
 func getText(url string) (string, error) {
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("User-Agent", "verx-registry-importer/1.0")
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("GET %s 失败: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	return getTextRetry(url, 2)
+}
+
+func getTextRetry(url string, retries int) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*attempt) * time.Second)
+		}
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "verx-registry-importer/1.0")
+		// 文本/CDN 一律不带 token：只允许 api.github.com 鉴权。
+		if shouldAuthForURL(url) {
+			if tok := githubToken(); tok != "" {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			}
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("GET %s 失败: %w", url, err)
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			return string(b), nil
+		}
+		if (resp.StatusCode == 403 || resp.StatusCode == 429) && attempt < retries {
+			noteRateLimitHit()
+			lastErr = fmt.Errorf("GET %s 返回 %d", url, resp.StatusCode)
+			time.Sleep(time.Duration(5*(attempt+1)) * time.Second)
+			continue
+		}
+		if resp.StatusCode >= 500 && attempt < retries {
+			lastErr = fmt.Errorf("GET %s 返回 %d", url, resp.StatusCode)
+			continue
+		}
 		return "", fmt.Errorf("GET %s 返回 %d", url, resp.StatusCode)
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return "", err
+	if lastErr == nil {
+		lastErr = fmt.Errorf("GET %s 失败", url)
 	}
-	return string(b), nil
+	return "", lastErr
 }
 
 // downloadSHA256 流式下载计算 sha256，不落盘，专给 GitHub release 资产用。
+// 注意：release 资产在 github.com / objects.githubusercontent.com 上，
+// 一律不带 GITHUB_TOKEN，避免 PAT 泄漏到 CDN。
 func downloadSHA256(url string) (string, error) {
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("User-Agent", "verx-registry-importer/1.0")
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("下载 %s 失败: %w", url, err)
 	}
+	req.Header.Set("User-Agent", "verx-registry-importer/1.0")
 	// GitHub release 资产 API 需要 Accept octet-stream，直接用浏览器下载地址即可
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -153,21 +277,44 @@ func writeManifest(outDir string, m *manifest.Manifest) error {
 	return os.WriteFile(dir+"/"+m.Name+".yaml", data, 0o644)
 }
 
-// ---- 多源合并：同名包（scoop/brew/arch/github/winget/vcpkg）在 verx 侧必须是一条 manifest ----
-// 同一个软件在不同源只有各自平台行（如 scoop 只有 windows/amd64，brew 只有
-// darwin/linux，arch 只有 linux/amd64），直接 writeManifest 会互相覆盖。
-// 这里用 merger 按包名收齐所有来源，再按 OS/Arch 去重合并后一次落盘。
+// ---- 多源合并：清单驱动 + 平台权威 + kind 隔离 ----
+// 同一个软件在不同源只有各自平台行（scoop/winget 只有 windows/amd64，
+// brew 只有 darwin/linux），直接 writeManifest 会互相覆盖。
+// merger 按包名收齐所有来源，再按 平台权威顺序 + 版本对齐 合并后一次落盘。
+//
+// 平台权威（config.platforms）：同 os/arch 只留优先级最高的源。
+// 同源则新版本覆盖旧版本；低优先级源即使版本更新也不抢行，避免 scoop/winget
+// 盲覆盖 github/brew 的新版行。
+// kind 隔离：app 与 lib 永不合并，先到者赢，后到直接丢弃。
 
 type merger struct {
-	mu sync.Mutex
-	m  map[string]*manifest.Manifest
+	mu       sync.Mutex
+	m        map[string]*manifest.Manifest
+	src      map[string]map[string]string // pkg -> "os/arch" -> source
+	ver      map[string]map[string]string // pkg -> "os/arch" -> version
+	platform map[string][]string          // os/arch -> [source...] 按权威排序
 }
 
-func newMerger() *merger { return &merger{m: map[string]*manifest.Manifest{}} }
+func newMerger() *merger {
+	return &merger{m: map[string]*manifest.Manifest{}, src: map[string]map[string]string{}, ver: map[string]map[string]string{}}
+}
 
-// add 把 incoming 并入同名包：线程安全，平台按 os/arch 去重（同平台 incoming 覆盖），
-// 版本取新者（ver.Compare），元数据缺啥补啥，test 统一去 .exe 跨平台。
-func (mg *merger) add(incoming *manifest.Manifest) {
+func (mg *merger) setPlatformPriority(p map[string][]string) {
+	mg.platform = p
+}
+
+func sourceRank(order []string, src string) int {
+	for i, s := range order {
+		if s == src {
+			return i
+		}
+	}
+	return 1 << 30
+}
+
+// add 把 incoming 并入同名包：线程安全，平台按权威取赢家，同源新版本覆盖，
+// kind 不一致直接丢弃，test 统一去 .exe 跨平台。
+func (mg *merger) add(incoming *manifest.Manifest, source string) {
 	if incoming == nil || incoming.Name == "" {
 		return
 	}
@@ -191,9 +338,19 @@ func (mg *merger) add(incoming *manifest.Manifest) {
 		}
 		normalizeMergedTest(&cp)
 		mg.m[incoming.Name] = &cp
+		if mg.src[incoming.Name] == nil {
+			mg.src[incoming.Name] = map[string]string{}
+		}
+		for _, p := range incoming.Platforms {
+			mg.src[incoming.Name][p.OS+"/"+p.Arch] = source
+		}
 		return
 	}
-	// 版本：incoming 更新则刷新版本相关元数据
+	// kind 隔离：app/lib 永不互串
+	if ex.Kind != incoming.Kind {
+		return
+	}
+	// 版本：取新者刷新版本元数据（平台行按权威另行裁决，不在这里盲覆盖）
 	if ver.Compare(incoming.Version, ex.Version) > 0 {
 		ex.Version = incoming.Version
 		if incoming.Channels != nil {
@@ -211,11 +368,6 @@ func (mg *merger) add(incoming *manifest.Manifest) {
 		if strings.TrimSpace(incoming.Display) != "" {
 			ex.Display = incoming.Display
 		}
-		if ex.Kind == "app" && incoming.Kind == "lib" {
-			// app 优先，lib 的 exports 不往 app 里塞
-		} else if ex.Kind != incoming.Kind && incoming.Kind != "" {
-			// kind 不一致时保留先到者，避免 app/lib 互串导致 Validate 失败
-		}
 		if incoming.Installer != nil && ex.Installer == nil {
 			ex.Installer = incoming.Installer
 		}
@@ -226,20 +378,46 @@ func (mg *merger) add(incoming *manifest.Manifest) {
 	if ex.Channels == nil && incoming.Channels != nil {
 		ex.Channels = incoming.Channels
 	}
-	// 平台按 os/arch 合并：同平台 incoming 覆盖（新版本 URL/hash 为准），缺行即补行
+	// 平台按权威合并：同 os/arch 只留优先级最高的源；同源则新版本覆盖旧版本。
+	// 低优先级即使版本更新也不抢行，避免 scoop/winget 盲覆盖 github/brew 的新版行。
+	if mg.src[ex.Name] == nil {
+		mg.src[ex.Name] = map[string]string{}
+	}
+	if mg.ver[ex.Name] == nil {
+		mg.ver[ex.Name] = map[string]string{}
+	}
 	idx := map[string]int{}
 	for i, p := range ex.Platforms {
 		idx[p.OS+"/"+p.Arch] = i
 	}
 	for _, p := range incoming.Platforms {
 		key := p.OS + "/" + p.Arch
-		if j, dup := idx[key]; dup {
-			// 同平台：incoming 的 URL/hash 更新（不同版本必然不同）
-			ex.Platforms[j] = p
+		order := mg.platform[key]
+		j, dup := idx[key]
+		if !dup {
+			ex.Platforms = append(ex.Platforms, p)
+			idx[key] = len(ex.Platforms) - 1
+			mg.src[ex.Name][key] = source
+			mg.ver[ex.Name][key] = incoming.Version
 			continue
 		}
-		ex.Platforms = append(ex.Platforms, p)
-		idx[key] = len(ex.Platforms) - 1
+		curSrc := mg.src[ex.Name][key]
+		if curSrc == "" {
+			curSrc = source
+		}
+		ri, rc := sourceRank(order, source), sourceRank(order, curSrc)
+		if ri < rc {
+			ex.Platforms[j] = p
+			mg.src[ex.Name][key] = source
+			mg.ver[ex.Name][key] = incoming.Version
+			continue
+		}
+		if source == curSrc && ver.Compare(incoming.Version, mg.ver[ex.Name][key]) >= 0 {
+			ex.Platforms[j] = p
+			mg.ver[ex.Name][key] = incoming.Version
+			continue
+		}
+		// 低权威或同源旧版本：跳过，不覆盖
 	}
 	// lib 的 exports：缺啥补啥
 	if ex.Kind == "lib" && incoming.Exports != nil {

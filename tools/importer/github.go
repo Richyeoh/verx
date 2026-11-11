@@ -39,74 +39,20 @@ type githubTemplate struct {
 	Keywords    []string            `yaml:"keywords"`
 }
 
-// listGithubRepos 自动发现：按 stars 排序拉取 GitHub 全站仓库（search API 上限 1000）。
-// minStars<=0 默认 2000；limit<=0 全量（最多 1000，search API 上限）。
-// 全量不再手写 top 列表，和 scoop/winget/brew/arch/vcpkg 一样只配开关+阈值。
-func listGithubRepos(minStars, limit int) ([]string, error) {
-	if minStars <= 0 {
-		minStars = 2000
-	}
-	const perPage = 100
-	var out []string
-	seen := map[string]bool{}
-	page := 1
-	for {
-		u := fmt.Sprintf("https://api.github.com/search/repositories?q=stars:%%3E%d&sort=stars&order=desc&per_page=%d&page=%d", minStars, perPage, page)
-		var sr struct {
-			TotalCount int `json:"total_count"`
-			Items      []struct {
-				FullName string `json:"full_name"`
-			} `json:"items"`
+// importGithubRepos 清单驱动：只拉 config.github.repos 显式列表（owner/repo）。
+// 不做全站自动发现，避免 5000 清单打爆 API 配额；无 release/无资产静默跳过。
+func importGithubRepos(repos []string, workers int, collect func(*manifest.Manifest), report func(string, error)) {
+	fmt.Printf("github 清单: %d 个仓库，并发转制中…\n", len(repos))
+	runJobs(repos, workers, func(repo string) {
+		repo = strings.TrimSpace(repo)
+		if repo == "" || !strings.Contains(repo, "/") {
+			return // 非 owner/repo 形式直接跳过，不耗 API
 		}
-		if err := getJSON(u, &sr); err != nil {
-			if len(out) == 0 {
-				return nil, fmt.Errorf("github 自动发现失败: %w", err)
-			}
-			break
-		}
-		if len(sr.Items) == 0 {
-			break
-		}
-		for _, it := range sr.Items {
-			if it.FullName == "" || seen[it.FullName] {
-				continue
-			}
-			seen[it.FullName] = true
-			out = append(out, it.FullName)
-			if limit > 0 && len(out) >= limit {
-				return out, nil
-			}
-		}
-		if len(sr.Items) < perPage {
-			break
-		}
-		page++
-		if page > 10 {
-			break // search API 最多返回前 1000
-		}
-	}
-	return out, nil
-}
-
-// importGithubAll 自动发现批量：先按 stars 拉全站仓库，再逐个 latest release 转制。
-// 无 release / 无匹配资产的仓库直接跳过（缺行即不支持），只收有可用二进制资产的。
-// 只进合并器，不直接落盘。内部 16 并发。
-func importGithubAll(minStars, limit int, collect func(*manifest.Manifest), report func(string, error)) {
-	repos, err := listGithubRepos(minStars, limit)
-	if err != nil {
-		report("github/list", err)
-		return
-	}
-	fmt.Printf("github 自动发现: %d 个仓库，并发转制中…\n", len(repos))
-	runJobs(repos, 16, func(repo string) {
-		// 全自动：name 为空取 repo 名，tmpl=nil 走默认资产关键字+自动元数据
 		m, err := importGitHub(repo, "", nil)
 		if err != nil {
-			report("github/"+repo, err)
-			return
+			return // 静默跳过：无 release/无资产是常态
 		}
 		collect(m)
-		fmt.Printf("COLLECT github/%s\n", m.Name)
 	})
 }
 
